@@ -57,7 +57,7 @@ class DeviceViewModel @Inject constructor(
         val device = _uiState.value.device ?: return
         viewModelScope.launch {
             try {
-                deviceRepository.toggleDevice(device.id, !device.isOn)
+                deviceRepository.toggleDevice(device.id)
             } catch (e: Exception) {
                 Log.e(TAG, "Error toggling device: ${e.message}", e)
                 _uiState.update { it.copy(error = "Error toggling device: ${e.message}") }

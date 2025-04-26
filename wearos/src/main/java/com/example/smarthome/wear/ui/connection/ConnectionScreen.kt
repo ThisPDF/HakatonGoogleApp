@@ -173,7 +173,7 @@ fun ConnectionScreen(
                             Text("Check Again")
                         }
                     }
-                    uiState.pairedDevices == 0 -> {
+                    uiState.pairedDevicesCount == 0 -> {
                         Text(
                             text = "No paired devices found. Please pair your phone in Bluetooth settings",
                             style = MaterialTheme.typography.body1,

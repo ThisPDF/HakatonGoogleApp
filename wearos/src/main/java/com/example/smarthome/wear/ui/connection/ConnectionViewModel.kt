@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-// Update the ConnectionUiState to include more information
 data class ConnectionUiState(
     val isConnecting: Boolean = false,
     val isConnected: Boolean = false,
@@ -43,19 +42,18 @@ class ConnectionViewModel @Inject constructor(
         }
         
         viewModelScope.launch {
-            bluetoothService.error.collect { error ->
-                if (error != null) {
-                    _uiState.update { it.copy(error = error) }
+            bluetoothService.error.collect { errorMsg ->
+                if (errorMsg != null) {
+                    _uiState.update { it.copy(error = errorMsg) }
                 }
             }
         }
     }
 
-    // Add a method to check Bluetooth status
     fun checkBluetoothStatus() {
         viewModelScope.launch {
             try {
-                val status = deviceRepository.checkBluetoothStatus()
+                val status = bluetoothService.checkBluetoothStatus()
                 _uiState.update {
                     it.copy(
                         bluetoothEnabled = status.isEnabled,
@@ -68,13 +66,12 @@ class ConnectionViewModel @Inject constructor(
         }
     }
 
-    // Enhance the connectToPhone method to track connection attempts
     fun connectToPhone() {
         viewModelScope.launch {
             _uiState.update { it.copy(isConnecting = true, error = null, connectionAttempt = it.connectionAttempt + 1) }
 
             try {
-                val success = deviceRepository.connectToPhone()
+                val success = bluetoothService.connectToPhone()
                 if (!success) {
                     _uiState.update { it.copy(error = "Failed to connect to phone") }
                 }

@@ -38,6 +38,14 @@ class ConnectionViewModel @Inject constructor(
                 }
             }
         }
+        
+        viewModelScope.launch {
+            bluetoothService.error.collect { error ->
+                if (error != null) {
+                    _uiState.update { it.copy(error = error) }
+                }
+            }
+        }
     }
 
     fun connectToPhone() {
@@ -51,6 +59,8 @@ class ConnectionViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message) }
+            } finally {
+                _uiState.update { it.copy(isConnecting = false) }
             }
         }
     }

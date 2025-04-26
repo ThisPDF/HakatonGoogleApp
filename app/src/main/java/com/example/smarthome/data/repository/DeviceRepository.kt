@@ -1,5 +1,6 @@
 package com.example.smarthome.data.repository
 
+import android.util.Log
 import com.example.smarthome.data.Device
 import com.example.smarthome.data.DeviceType
 import com.example.smarthome.data.bluetooth.BluetoothService
@@ -13,6 +14,7 @@ import javax.inject.Singleton
 class DeviceRepository @Inject constructor(
     private val bluetoothService: BluetoothService
 ) {
+    private val TAG = "DeviceRepository"
     private val _devices = MutableStateFlow<List<Device>>(emptyList())
     val devices: Flow<List<Device>> = _devices.asStateFlow()
 
@@ -25,6 +27,22 @@ class DeviceRepository @Inject constructor(
             Device("front_lock", "Front Door", DeviceType.LOCK, "entrance", false),
             Device("temp_sensor", "Temperature Sensor", DeviceType.SENSOR, "bedroom", true, "70.5")
         )
+        
+        // Listen for device requests from the watch
+        listenForDeviceRequests()
+    }
+    
+    private fun listenForDeviceRequests() {
+        // This would be implemented with a callback from the BluetoothService
+        // For now, we'll just sync devices whenever the connection state changes
+        kotlinx.coroutines.MainScope().launch {
+            bluetoothService.connectionState.collect { state ->
+                if (state == BluetoothService.ConnectionState.CONNECTED) {
+                    // Automatically sync devices when connected
+                    syncDevicesWithWatch()
+                }
+            }
+        }
     }
     
     suspend fun toggleDevice(deviceId: String) {
@@ -42,7 +60,7 @@ class DeviceRepository @Inject constructor(
                 bluetoothService.sendCommand(deviceId, "TOGGLE")
             } catch (e: Exception) {
                 // Log error but don't fail the toggle operation
-                android.util.Log.e("DeviceRepository", "Failed to sync toggle: ${e.message}")
+                Log.e(TAG, "Failed to sync toggle: ${e.message}")
             }
         }
     }
@@ -62,16 +80,17 @@ class DeviceRepository @Inject constructor(
                 bluetoothService.sendCommand(deviceId, "VALUE:$value")
             } catch (e: Exception) {
                 // Log error but don't fail the update operation
-                android.util.Log.e("DeviceRepository", "Failed to sync value update: ${e.message}")
+                Log.e(TAG, "Failed to sync value update: ${e.message}")
             }
         }
     }
     
     suspend fun syncDevicesWithWatch(): Boolean {
         return try {
+            Log.d(TAG, "Syncing devices with watch")
             bluetoothService.sendDevices(_devices.value)
         } catch (e: Exception) {
-            android.util.Log.e("DeviceRepository", "Failed to sync devices: ${e.message}")
+            Log.e(TAG, "Failed to sync devices: ${e.message}")
             false
         }
     }
@@ -80,11 +99,21 @@ class DeviceRepository @Inject constructor(
         val currentDevices = _devices.value.toMutableList()
         currentDevices.add(device)
         _devices.value = currentDevices
+        
+        // Sync with watch
+        kotlinx.coroutines.MainScope().launch {
+            syncDevicesWithWatch()
+        }
     }
     
     fun removeDevice(deviceId: String) {
         val currentDevices = _devices.value.toMutableList()
         currentDevices.removeIf { it.id == deviceId }
         _devices.value = currentDevices
+        
+        // Sync with watch
+        kotlinx.coroutines.MainScope().launch {
+            syncDevicesWithWatch()
+        }
     }
 }

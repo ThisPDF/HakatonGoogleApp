@@ -56,7 +56,8 @@ fun ConnectionScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = uiState.error ?: "Unknown error",
-                        textAlign = TextAlign.Center
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.body2
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(
@@ -77,6 +78,12 @@ fun ConnectionScreen(
                         text = "Connect to Phone",
                         style = MaterialTheme.typography.title2,
                         textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Make sure Bluetooth is enabled on both devices and they are paired.",
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.body2
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(

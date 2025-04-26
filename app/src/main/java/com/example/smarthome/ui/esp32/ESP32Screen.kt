@@ -7,7 +7,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothDisabled
 import androidx.compose.material.icons.filled.Lightbulb
-import androidx.compose.material.icons.filled.LightbulbOutline
+import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -127,7 +127,7 @@ fun ESP32Screen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
-                            imageVector = if (ledState) Icons.Default.Lightbulb else Icons.Default.LightbulbOutline,
+                            imageVector = if (ledState) Icons.Default.Lightbulb else Icons.Outlined.Lightbulb,
                             contentDescription = "LED status",
                             tint = if (ledState) Color.Yellow else MaterialTheme.colorScheme.onSurface
                         )

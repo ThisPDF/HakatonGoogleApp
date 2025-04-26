@@ -35,33 +35,58 @@ class BluetoothViewModel @Inject constructor(
         viewModelScope.launch {
             bluetoothService.connectionState.collect { state ->
                 _uiState.update { it.copy(connectionState = state) }
+                
+                // If disconnected, clear the connected device
+                if (state == BluetoothService.ConnectionState.DISCONNECTED) {
+                    _uiState.update { it.copy(connectedDevice = null) }
+                }
             }
         }
     }
 
     fun refreshPairedDevices() {
-        val devices = bluetoothService.getPairedDevices()
-        _uiState.update { it.copy(pairedDevices = devices) }
+        viewModelScope.launch {
+            try {
+                val devices = bluetoothService.getPairedDevices()
+                _uiState.update { it.copy(pairedDevices = devices, error = null) }
+            } catch (e: Exception) {
+                _uiState.update { 
+                    it.copy(
+                        error = "Failed to get paired devices: ${e.message}",
+                        pairedDevices = emptyList()
+                    ) 
+                }
+            }
+        }
     }
 
     fun connectToDevice(device: BluetoothDevice) {
         viewModelScope.launch {
             try {
+                _uiState.update { it.copy(error = null) }
                 val success = bluetoothService.connectToDevice(device.address)
                 if (success) {
-                    _uiState.update { it.copy(connectedDevice = device, error = null) }
+                    _uiState.update { it.copy(connectedDevice = device) }
                 } else {
                     _uiState.update { it.copy(error = "Failed to connect to device") }
                 }
             } catch (e: Exception) {
-                _uiState.update { it.copy(error = e.message) }
+                _uiState.update { it.copy(error = "Error: ${e.message}") }
             }
         }
     }
 
     fun syncDevices() {
         viewModelScope.launch {
-            deviceRepository.syncDevicesWithWatch()
+            try {
+                _uiState.update { it.copy(error = null) }
+                val success = deviceRepository.syncDevicesWithWatch()
+                if (!success) {
+                    _uiState.update { it.copy(error = "Failed to sync devices") }
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = "Error syncing devices: ${e.message}") }
+            }
         }
     }
 }

@@ -1,11 +1,14 @@
 package com.example.smarthome.data.bluetooth
 
+import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
+import android.content.pm.PackageManager
 import android.util.Log
+import androidx.core.app.ActivityCompat
 import com.example.smarthome.data.Device
 import com.google.gson.Gson
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -28,8 +31,8 @@ class BluetoothService @Inject constructor(
     private val TAG = "BluetoothService"
     private val SERVICE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB") // Standard SPP UUID
     
-    private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-    private val bluetoothAdapter = bluetoothManager.adapter
+    private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+    private val bluetoothAdapter = bluetoothManager?.adapter
     
     private var socket: BluetoothSocket? = null
     private var inputStream: InputStream? = null
@@ -45,8 +48,13 @@ class BluetoothService @Inject constructor(
     }
     
     suspend fun connectToDevice(deviceAddress: String): Boolean {
-        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
-            Log.e(TAG, "Bluetooth is not available or not enabled")
+        if (bluetoothAdapter == null) {
+            Log.e(TAG, "Bluetooth is not available")
+            return false
+        }
+        
+        if (!bluetoothAdapter.isEnabled) {
+            Log.e(TAG, "Bluetooth is not enabled")
             return false
         }
         
@@ -54,12 +62,47 @@ class BluetoothService @Inject constructor(
             try {
                 _connectionState.value = ConnectionState.CONNECTING
                 
-                val device = bluetoothAdapter.getRemoteDevice(deviceAddress)
-                socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
-                socket?.connect()
+                // Check for permissions
+                if (ActivityCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.BLUETOOTH_CONNECT
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    Log.e(TAG, "Bluetooth connect permission not granted")
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    return@withContext false
+                }
                 
-                inputStream = socket?.inputStream
-                outputStream = socket?.outputStream
+                val device = try {
+                    bluetoothAdapter.getRemoteDevice(deviceAddress)
+                } catch (e: IllegalArgumentException) {
+                    Log.e(TAG, "Invalid Bluetooth address: $deviceAddress")
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    return@withContext false
+                }
+                
+                // Close any existing connection
+                disconnect()
+                
+                try {
+                    socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
+                    socket?.connect()
+                } catch (e: IOException) {
+                    Log.e(TAG, "Failed to connect: ${e.message}")
+                    socket?.close()
+                    socket = null
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    return@withContext false
+                }
+                
+                try {
+                    inputStream = socket?.inputStream
+                    outputStream = socket?.outputStream
+                } catch (e: IOException) {
+                    Log.e(TAG, "Failed to get streams: ${e.message}")
+                    disconnect()
+                    return@withContext false
+                }
                 
                 _connectionState.value = ConnectionState.CONNECTED
                 
@@ -67,8 +110,8 @@ class BluetoothService @Inject constructor(
                 startListening()
                 
                 true
-            } catch (e: IOException) {
-                Log.e(TAG, "Failed to connect: ${e.message}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error: ${e.message}")
                 disconnect()
                 false
             }
@@ -78,16 +121,26 @@ class BluetoothService @Inject constructor(
     fun disconnect() {
         try {
             inputStream?.close()
+        } catch (e: IOException) {
+            Log.e(TAG, "Error closing input stream: ${e.message}")
+        }
+        
+        try {
             outputStream?.close()
+        } catch (e: IOException) {
+            Log.e(TAG, "Error closing output stream: ${e.message}")
+        }
+        
+        try {
             socket?.close()
         } catch (e: IOException) {
-            Log.e(TAG, "Error closing connection: ${e.message}")
-        } finally {
-            inputStream = null
-            outputStream = null
-            socket = null
-            _connectionState.value = ConnectionState.DISCONNECTED
+            Log.e(TAG, "Error closing socket: ${e.message}")
         }
+        
+        inputStream = null
+        outputStream = null
+        socket = null
+        _connectionState.value = ConnectionState.DISCONNECTED
     }
     
     suspend fun sendDevices(devices: List<Device>): Boolean {
@@ -100,10 +153,17 @@ class BluetoothService @Inject constructor(
                 
                 val json = gson.toJson(devices)
                 val message = "DEVICES:$json"
-                outputStream?.write(message.toByteArray())
-                true
-            } catch (e: IOException) {
-                Log.e(TAG, "Error sending devices: ${e.message}")
+                
+                try {
+                    outputStream?.write(message.toByteArray())
+                    true
+                } catch (e: IOException) {
+                    Log.e(TAG, "Error sending devices: ${e.message}")
+                    disconnect()
+                    false
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error sending devices: ${e.message}")
                 disconnect()
                 false
             }
@@ -119,10 +179,17 @@ class BluetoothService @Inject constructor(
                 }
                 
                 val message = "COMMAND:$deviceId:$command"
-                outputStream?.write(message.toByteArray())
-                true
-            } catch (e: IOException) {
-                Log.e(TAG, "Error sending command: ${e.message}")
+                
+                try {
+                    outputStream?.write(message.toByteArray())
+                    true
+                } catch (e: IOException) {
+                    Log.e(TAG, "Error sending command: ${e.message}")
+                    disconnect()
+                    false
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error sending command: ${e.message}")
                 disconnect()
                 false
             }
@@ -145,6 +212,9 @@ class BluetoothService @Inject constructor(
                 } catch (e: IOException) {
                     Log.e(TAG, "Disconnected: ${e.message}")
                     break
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error reading from stream: ${e.message}")
+                    break
                 }
             }
             
@@ -155,33 +225,57 @@ class BluetoothService @Inject constructor(
     private fun processMessage(message: String) {
         Log.d(TAG, "Received message: $message")
         
-        when {
-            message.startsWith("DEVICES:") -> {
-                val json = message.substring(8)
-                try {
-                    val devices = gson.fromJson(json, Array<Device>::class.java).toList()
-                    // Handle received devices
-                    Log.d(TAG, "Received ${devices.size} devices")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error parsing devices: ${e.message}")
+        try {
+            when {
+                message.startsWith("DEVICES:") -> {
+                    val json = message.substring(8)
+                    try {
+                        val devices = gson.fromJson(json, Array<Device>::class.java).toList()
+                        // Handle received devices
+                        Log.d(TAG, "Received ${devices.size} devices")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error parsing devices: ${e.message}")
+                    }
+                }
+                message.startsWith("COMMAND:") -> {
+                    val parts = message.split(":")
+                    if (parts.size >= 3) {
+                        val deviceId = parts[1]
+                        val command = parts[2]
+                        // Handle received command
+                        Log.d(TAG, "Received command for device $deviceId: $command")
+                    }
                 }
             }
-            message.startsWith("COMMAND:") -> {
-                val parts = message.split(":")
-                if (parts.size >= 3) {
-                    val deviceId = parts[1]
-                    val command = parts[2]
-                    // Handle received command
-                    Log.d(TAG, "Received command for device $deviceId: $command")
-                }
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing message: ${e.message}")
         }
     }
     
     fun getPairedDevices(): List<BluetoothDevice> {
-        return if (bluetoothAdapter?.isEnabled == true) {
-            bluetoothAdapter.bondedDevices.toList()
-        } else {
+        if (bluetoothAdapter == null) {
+            Log.e(TAG, "Bluetooth adapter is null")
+            return emptyList()
+        }
+        
+        if (!bluetoothAdapter.isEnabled) {
+            Log.e(TAG, "Bluetooth is not enabled")
+            return emptyList()
+        }
+        
+        return try {
+            if (ActivityCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.BLUETOOTH_CONNECT
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.e(TAG, "Bluetooth connect permission not granted")
+                return emptyList()
+            }
+            
+            bluetoothAdapter.bondedDevices?.toList() ?: emptyList()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting paired devices: ${e.message}")
             emptyList()
         }
     }

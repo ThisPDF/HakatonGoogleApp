@@ -37,8 +37,13 @@ class DeviceRepository @Inject constructor(
             currentDevices[deviceIndex] = updatedDevice
             _devices.value = currentDevices
             
-            // Sync with watch
-            bluetoothService.sendCommand(deviceId, "TOGGLE")
+            // Sync with watch if connected
+            try {
+                bluetoothService.sendCommand(deviceId, "TOGGLE")
+            } catch (e: Exception) {
+                // Log error but don't fail the toggle operation
+                android.util.Log.e("DeviceRepository", "Failed to sync toggle: ${e.message}")
+            }
         }
     }
     
@@ -52,13 +57,23 @@ class DeviceRepository @Inject constructor(
             currentDevices[deviceIndex] = updatedDevice
             _devices.value = currentDevices
             
-            // Sync with watch
-            bluetoothService.sendCommand(deviceId, "VALUE:$value")
+            // Sync with watch if connected
+            try {
+                bluetoothService.sendCommand(deviceId, "VALUE:$value")
+            } catch (e: Exception) {
+                // Log error but don't fail the update operation
+                android.util.Log.e("DeviceRepository", "Failed to sync value update: ${e.message}")
+            }
         }
     }
     
-    suspend fun syncDevicesWithWatch() {
-        bluetoothService.sendDevices(_devices.value)
+    suspend fun syncDevicesWithWatch(): Boolean {
+        return try {
+            bluetoothService.sendDevices(_devices.value)
+        } catch (e: Exception) {
+            android.util.Log.e("DeviceRepository", "Failed to sync devices: ${e.message}")
+            false
+        }
     }
     
     fun addDevice(device: Device) {

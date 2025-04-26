@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -223,54 +224,78 @@ fun ConnectionStatus(
     Card(
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            when (connectionState) {
-                BluetoothService.ConnectionState.CONNECTED -> {
-                    Icon(
-                        imageVector = Icons.Default.BluetoothConnected,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Column {
-                        Text(
-                            text = "Connected",
-                            style = MaterialTheme.typography.titleMedium
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                when (connectionState) {
+                    BluetoothService.ConnectionState.CONNECTED -> {
+                        Icon(
+                            imageVector = Icons.Default.BluetoothConnected,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
                         )
-                        connectedDevice?.let {
+                        Column {
                             Text(
-                                text = it.name ?: "Unknown Device",
-                                style = MaterialTheme.typography.bodyMedium
+                                text = "Connected",
+                                style = MaterialTheme.typography.titleMedium
                             )
+                            connectedDevice?.let {
+                                Text(
+                                    text = it.name ?: "Unknown Device",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = it.address,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
                         }
                     }
+                    BluetoothService.ConnectionState.CONNECTING -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            text = "Connecting...",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+                    BluetoothService.ConnectionState.DISCONNECTED -> {
+                        Icon(
+                            imageVector = Icons.Default.BluetoothDisabled,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            text = "Disconnected",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
                 }
-                BluetoothService.ConnectionState.CONNECTING -> {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.dp
-                    )
-                    Text(
-                        text = "Connecting...",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
-                BluetoothService.ConnectionState.DISCONNECTED -> {
-                    Icon(
-                        imageVector = Icons.Default.BluetoothDisabled,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error
-                    )
-                    Text(
-                        text = "Disconnected",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
+            }
+            
+            // Add connection tips when disconnected
+            if (connectionState == BluetoothService.ConnectionState.DISCONNECTED) {
+                Divider(modifier = Modifier.padding(vertical = 8.dp))
+                Text(
+                    text = "Connection Tips:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "• Make sure your WearOS device is paired with this phone\n" +
+                          "• Keep devices close to each other\n" +
+                          "• Ensure Bluetooth is enabled on both devices",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         }
     }

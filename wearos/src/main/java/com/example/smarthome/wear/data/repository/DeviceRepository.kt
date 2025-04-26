@@ -3,7 +3,9 @@ package com.example.smarthome.wear.data.repository
 import android.util.Log
 import com.example.smarthome.wear.data.Device
 import com.example.smarthome.wear.data.bluetooth.BluetoothService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -64,6 +66,26 @@ class DeviceRepository @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Error refreshing devices: ${e.message}")
             false
+        }
+    }
+
+    // Add a method to check Bluetooth status
+    data class BluetoothStatus(
+        val isAvailable: Boolean,
+        val isEnabled: Boolean,
+        val pairedDevices: Int
+    )
+
+    suspend fun checkBluetoothStatus(): BluetoothStatus {
+        return withContext(Dispatchers.IO) {
+            try {
+                val status = bluetoothService.checkBluetoothStatus()
+                Log.d(TAG, "Bluetooth status: available=${status.isAvailable}, enabled=${status.isEnabled}, paired=${status.pairedDevices}")
+                status
+            } catch (e: Exception) {
+                Log.e(TAG, "Error checking Bluetooth status: ${e.message}")
+                BluetoothStatus(false, false, 0)
+            }
         }
     }
 }

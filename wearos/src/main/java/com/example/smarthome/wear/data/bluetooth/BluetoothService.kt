@@ -23,6 +23,8 @@ import java.io.OutputStream
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.delay
+import com.example.smarthome.wear.data.repository.DeviceRepository
 
 @Singleton
 class BluetoothService @Inject constructor(
@@ -54,6 +56,7 @@ class BluetoothService @Inject constructor(
         CONNECTED, CONNECTING, DISCONNECTED
     }
     
+    // Improve the connectToPhone method to be more robust
     suspend fun connectToPhone(): Boolean {
         if (bluetoothAdapter == null) {
             _error.value = "Bluetooth is not available"
@@ -100,46 +103,111 @@ class BluetoothService @Inject constructor(
                     Log.d(TAG, "Device: ${device.name} (${device.address})")
                 }
                 
-                // Try to find a phone in the paired devices
-                val phoneDevice = pairedDevices.find { 
-                    it.name?.contains("Phone", ignoreCase = true) == true || 
-                    it.name?.contains("Galaxy", ignoreCase = true) == true ||
-                    it.name?.contains("Pixel", ignoreCase = true) == true ||
-                    it.name?.contains("iPhone", ignoreCase = true) == true
+                // Try to find a phone in the paired devices - more comprehensive search
+                val phoneDevice = pairedDevices.find { device -> 
+                    val deviceName = device.name?.lowercase() ?: ""
+                    deviceName.contains("phone") || 
+                    deviceName.contains("galaxy") ||
+                    deviceName.contains("pixel") ||
+                    deviceName.contains("iphone") ||
+                    deviceName.contains("oneplus") ||
+                    deviceName.contains("xiaomi") ||
+                    deviceName.contains("oppo") ||
+                    deviceName.contains("vivo") ||
+                    deviceName.contains("huawei") ||
+                    deviceName.contains("honor") ||
+                    deviceName.contains("realme") ||
+                    deviceName.contains("poco") ||
+                    deviceName.contains("redmi") ||
+                    deviceName.contains("samsung") ||
+                    deviceName.contains("motorola") ||
+                    deviceName.contains("sony") ||
+                    deviceName.contains("lg") ||
+                    deviceName.contains("htc")
                 }
                 
-                if (phoneDevice == null) {
-                    _error.value = "No phone found in paired devices"
-                    Log.e(TAG, "No phone found in paired devices")
+                // If no phone found by name, try the first paired device
+                val targetDevice = phoneDevice ?: pairedDevices.firstOrNull()
+                
+                if (targetDevice == null) {
+                    _error.value = "No suitable device found in paired devices"
+                    Log.e(TAG, "No suitable device found in paired devices")
                     _connectionState.value = ConnectionState.DISCONNECTED
                     return@withContext false
                 }
                 
-                Log.d(TAG, "Attempting to connect to ${phoneDevice.name} (${phoneDevice.address})")
+                Log.d(TAG, "Attempting to connect to ${targetDevice.name} (${targetDevice.address})")
                 
                 // Close any existing connection
                 disconnect()
                 
-                try {
-                    socket = phoneDevice.createRfcommSocketToServiceRecord(SERVICE_UUID)
-                    socket?.connect()
-                    Log.d(TAG, "Connected to ${phoneDevice.name}")
-                } catch (e: IOException) {
-                    _error.value = "Failed to connect: ${e.message}"
-                    Log.e(TAG, "Failed to connect: ${e.message}")
+                // Try multiple times to establish connection
+                var connectionAttempts = 0
+                val maxAttempts = 5
+                
+                while (connectionAttempts < maxAttempts) {
+                    connectionAttempts++
+                    Log.d(TAG, "Connection attempt $connectionAttempts of $maxAttempts")
+                    
                     try {
-                        socket?.close()
-                    } catch (closeException: IOException) {
-                        Log.e(TAG, "Could not close the client socket", closeException)
+                        // Try to create and connect socket
+                        socket = targetDevice.createRfcommSocketToServiceRecord(SERVICE_UUID)
+                        
+                        // Set connection timeout
+                        socket?.connect()
+                        Log.d(TAG, "Connected to ${targetDevice.name}")
+                        break
+                    } catch (e: IOException) {
+                        Log.e(TAG, "Connection attempt $connectionAttempts failed: ${e.message}")
+                        
+                        try {
+                            socket?.close()
+                        } catch (closeException: IOException) {
+                            Log.e(TAG, "Could not close the client socket", closeException)
+                        }
+                        
+                        socket = null
+                        
+                        // Try alternative connection method if standard method fails
+                        if (connectionAttempts == 2) {
+                            try {
+                                Log.d(TAG, "Trying alternative connection method...")
+                                // Use reflection to get a different socket type
+                                val method = targetDevice.javaClass.getMethod("createInsecureRfcommSocketToServiceRecord", UUID::class.java)
+                                socket = method.invoke(targetDevice, SERVICE_UUID) as BluetoothSocket
+                                socket?.connect()
+                                Log.d(TAG, "Connected using alternative method")
+                                break
+                            } catch (e2: Exception) {
+                                Log.e(TAG, "Alternative connection method failed: ${e2.message}")
+                                try {
+                                    socket?.close()
+                                } catch (closeException: IOException) {
+                                    Log.e(TAG, "Could not close the client socket", closeException)
+                                }
+                                socket = null
+                            }
+                        }
+                        
+                        if (connectionAttempts >= maxAttempts) {
+                            _error.value = "Failed to connect after $maxAttempts attempts: ${e.message}"
+                            Log.e(TAG, "Failed to connect after $maxAttempts attempts")
+                            _connectionState.value = ConnectionState.DISCONNECTED
+                            return@withContext false
+                        }
+                        
+                        // Wait before next attempt
+                        delay(1000)
                     }
-                    socket = null
-                    _connectionState.value = ConnectionState.DISCONNECTED
-                    return@withContext false
                 }
                 
                 try {
                     inputStream = socket?.inputStream
                     outputStream = socket?.outputStream
+                    
+                    if (inputStream == null || outputStream == null) {
+                        throw IOException("Failed to get valid streams")
+                    }
                 } catch (e: IOException) {
                     _error.value = "Failed to get streams: ${e.message}"
                     Log.e(TAG, "Failed to get streams: ${e.message}")
@@ -231,25 +299,56 @@ class BluetoothService @Inject constructor(
         }
     }
     
+    // Improve the startListening method to handle errors better
     private fun startListening() {
         Thread {
             val buffer = ByteArray(1024)
             var bytes: Int
+            var consecutiveErrors = 0
+            val maxConsecutiveErrors = 5
             
             while (_connectionState.value == ConnectionState.CONNECTED) {
                 try {
+                    if (inputStream == null) {
+                        Log.e(TAG, "Input stream is null, stopping listener")
+                        break
+                    }
+                    
                     bytes = inputStream?.read(buffer) ?: -1
                     
                     if (bytes > 0) {
                         val message = String(buffer, 0, bytes)
+                        Log.d(TAG, "Received data: $message")
                         processMessage(message)
+                        consecutiveErrors = 0
+                    } else if (bytes < 0) {
+                        // End of stream reached
+                        Log.e(TAG, "End of stream reached")
+                        break
                     }
                 } catch (e: IOException) {
-                    Log.e(TAG, "Disconnected: ${e.message}")
-                    break
+                    consecutiveErrors++
+                    Log.e(TAG, "Error reading from stream ($consecutiveErrors/$maxConsecutiveErrors): ${e.message}")
+                    
+                    if (consecutiveErrors >= maxConsecutiveErrors) {
+                        Log.e(TAG, "Too many consecutive errors, disconnecting")
+                        break
+                    }
+                    
+                    // Add a small delay to avoid tight loop on errors
+                    try {
+                        Thread.sleep(500)
+                    } catch (interruptException: InterruptedException) {
+                        Log.e(TAG, "Listener thread sleep interrupted", interruptException)
+                    }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error reading from stream: ${e.message}")
-                    break
+                    consecutiveErrors++
+                    Log.e(TAG, "Unexpected error ($consecutiveErrors/$maxConsecutiveErrors): ${e.message}")
+                    
+                    if (consecutiveErrors >= maxConsecutiveErrors) {
+                        Log.e(TAG, "Too many consecutive errors, disconnecting")
+                        break
+                    }
                 }
             }
             
@@ -312,5 +411,35 @@ class BluetoothService @Inject constructor(
             currentDevices[deviceIndex] = updatedDevice
             _devices.value = currentDevices
         }
+    }
+
+    // Add a method to check Bluetooth status
+    fun checkBluetoothStatus(): DeviceRepository.BluetoothStatus {
+        val isAvailable = bluetoothAdapter != null
+        val isEnabled = bluetoothAdapter?.isEnabled == true
+        
+        var pairedDeviceCount = 0
+        
+        if (isEnabled) {
+            try {
+                if (ActivityCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.BLUETOOTH_CONNECT
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    pairedDeviceCount = bluetoothAdapter?.bondedDevices?.size ?: 0
+                    
+                    // Log paired devices for debugging
+                    Log.d(TAG, "Paired devices:")
+                    bluetoothAdapter?.bondedDevices?.forEach { device ->
+                        Log.d(TAG, "Device: ${device.name} (${device.address})")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error getting paired devices: ${e.message}")
+            }
+        }
+        
+        return DeviceRepository.BluetoothStatus(isAvailable, isEnabled, pairedDeviceCount)
     }
 }

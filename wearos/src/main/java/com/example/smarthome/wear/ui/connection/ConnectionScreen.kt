@@ -40,6 +40,15 @@ fun ConnectionScreen(
                         text = "Connecting to phone...",
                         textAlign = TextAlign.Center
                     )
+                    
+                    // Show connection attempt count if available
+                    if (uiState.connectionAttempt > 0) {
+                        Text(
+                            text = "Attempt ${uiState.connectionAttempt}",
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.body2
+                        )
+                    }
                 }
             }
             uiState.error != null -> {
@@ -60,11 +69,29 @@ fun ConnectionScreen(
                         style = MaterialTheme.typography.body2
                     )
                     Spacer(modifier = Modifier.height(16.dp))
+                    
+                    // Add troubleshooting tips
+                    Text(
+                        text = "Troubleshooting tips:",
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.body1
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "• Make sure Bluetooth is enabled on both devices\n" +
+                              "• Ensure devices are paired\n" +
+                              "• Keep devices close to each other\n" +
+                              "• Restart Bluetooth on both devices",
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.body2
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
                     Button(
                         onClick = { viewModel.connectToPhone() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Retry")
+                        Text("Retry Connection")
                     }
                 }
             }
@@ -91,6 +118,19 @@ fun ConnectionScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Connect")
+                    }
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
+                    // Add check Bluetooth status button
+                    Button(
+                        onClick = { viewModel.checkBluetoothStatus() },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            backgroundColor = MaterialTheme.colors.surface
+                        )
+                    ) {
+                        Text("Check Bluetooth Status")
                     }
                 }
             }

@@ -24,6 +24,8 @@ import java.io.OutputStream
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+// Add import for delay
+import kotlinx.coroutines.delay
 
 @Singleton
 class BluetoothService @Inject constructor(
@@ -67,6 +69,7 @@ class BluetoothService @Inject constructor(
         }
     }
     
+    // Update the connectToDevice method to be more robust
     suspend fun connectToDevice(deviceAddress: String): Boolean {
         if (bluetoothAdapter == null) {
             Log.e(TAG, "Bluetooth is not available")
@@ -104,26 +107,51 @@ class BluetoothService @Inject constructor(
                 // Close any existing connection
                 disconnect()
                 
-                try {
-                    Log.d(TAG, "Attempting to connect to ${device.name} (${device.address})")
-                    socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
-                    socket?.connect()
-                    Log.d(TAG, "Connected to ${device.name}")
-                } catch (e: IOException) {
-                    Log.e(TAG, "Failed to connect: ${e.message}")
+                // Try multiple times to establish connection
+                var connectionAttempts = 0
+                val maxAttempts = 3
+                
+                while (connectionAttempts < maxAttempts) {
+                    connectionAttempts++
+                    Log.d(TAG, "Connection attempt $connectionAttempts of $maxAttempts")
+                    
                     try {
-                        socket?.close()
-                    } catch (closeException: IOException) {
-                        Log.e(TAG, "Could not close the client socket", closeException)
+                        Log.d(TAG, "Attempting to connect to ${device.name} (${device.address})")
+                        socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
+                        
+                        // Set socket timeout
+                        socket?.connect()
+                        Log.d(TAG, "Connected to ${device.name}")
+                        break
+                    } catch (e: IOException) {
+                        Log.e(TAG, "Connection attempt $connectionAttempts failed: ${e.message}")
+                        
+                        try {
+                            socket?.close()
+                        } catch (closeException: IOException) {
+                            Log.e(TAG, "Could not close the client socket", closeException)
+                        }
+                        
+                        socket = null
+                        
+                        if (connectionAttempts >= maxAttempts) {
+                            Log.e(TAG, "Failed to connect after $maxAttempts attempts")
+                            _connectionState.value = ConnectionState.DISCONNECTED
+                            return@withContext false
+                        }
+                        
+                        // Wait before next attempt
+                        delay(1000)
                     }
-                    socket = null
-                    _connectionState.value = ConnectionState.DISCONNECTED
-                    return@withContext false
                 }
                 
                 try {
                     inputStream = socket?.inputStream
                     outputStream = socket?.outputStream
+                    
+                    if (inputStream == null || outputStream == null) {
+                        throw IOException("Failed to get valid streams")
+                    }
                 } catch (e: IOException) {
                     Log.e(TAG, "Failed to get streams: ${e.message}")
                     disconnect()
@@ -228,25 +256,56 @@ class BluetoothService @Inject constructor(
         }
     }
     
+    // Improve the startListening method to handle errors better
     private fun startListening() {
         Thread {
             val buffer = ByteArray(1024)
             var bytes: Int
+            var consecutiveErrors = 0
+            val maxConsecutiveErrors = 5
             
             while (_connectionState.value == ConnectionState.CONNECTED) {
                 try {
+                    if (inputStream == null) {
+                        Log.e(TAG, "Input stream is null, stopping listener")
+                        break
+                    }
+                    
                     bytes = inputStream?.read(buffer) ?: -1
                     
                     if (bytes > 0) {
                         val message = String(buffer, 0, bytes)
+                        Log.d(TAG, "Received data: $message")
                         processMessage(message)
+                        consecutiveErrors = 0
+                    } else if (bytes < 0) {
+                        // End of stream reached
+                        Log.e(TAG, "End of stream reached")
+                        break
                     }
                 } catch (e: IOException) {
-                    Log.e(TAG, "Disconnected: ${e.message}")
-                    break
+                    consecutiveErrors++
+                    Log.e(TAG, "Error reading from stream ($consecutiveErrors/$maxConsecutiveErrors): ${e.message}")
+                    
+                    if (consecutiveErrors >= maxConsecutiveErrors) {
+                        Log.e(TAG, "Too many consecutive errors, disconnecting")
+                        break
+                    }
+                    
+                    // Add a small delay to avoid tight loop on errors
+                    try {
+                        Thread.sleep(500)
+                    } catch (interruptException: InterruptedException) {
+                        Log.e(TAG, "Listener thread sleep interrupted", interruptException)
+                    }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error reading from stream: ${e.message}")
-                    break
+                    consecutiveErrors++
+                    Log.e(TAG, "Unexpected error ($consecutiveErrors/$maxConsecutiveErrors): ${e.message}")
+                    
+                    if (consecutiveErrors >= maxConsecutiveErrors) {
+                        Log.e(TAG, "Too many consecutive errors, disconnecting")
+                        break
+                    }
                 }
             }
             
@@ -317,6 +376,7 @@ class BluetoothService @Inject constructor(
         }
     }
     
+    // Improve the AcceptThread to be more robust
     private inner class AcceptThread : Thread() {
         init {
             try {
@@ -325,22 +385,40 @@ class BluetoothService @Inject constructor(
                         Manifest.permission.BLUETOOTH_CONNECT
                     ) == PackageManager.PERMISSION_GRANTED
                 ) {
-                    serverSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord(
-                        SERVICE_NAME,
-                        SERVICE_UUID
-                    )
-                    Log.d(TAG, "Server socket created, listening for connections")
+                    // Try to create server socket with different strategies
+                    try {
+                        serverSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord(
+                            SERVICE_NAME,
+                            SERVICE_UUID
+                        )
+                        Log.d(TAG, "Server socket created, listening for connections")
+                    } catch (e: IOException) {
+                        Log.e(TAG, "Failed to create server socket with RfcommWithServiceRecord, trying alternative", e)
+                        try {
+                            // Try alternative method if available
+                            serverSocket = bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord(
+                                SERVICE_NAME,
+                                SERVICE_UUID
+                            )
+                            Log.d(TAG, "Server socket created with insecure method")
+                        } catch (e2: IOException) {
+                            Log.e(TAG, "Failed to create server socket with alternative method", e2)
+                            serverSocket = null
+                        }
+                    }
                 } else {
                     Log.e(TAG, "Bluetooth connect permission not granted")
                 }
-            } catch (e: IOException) {
-                Log.e(TAG, "Socket's listen() method failed", e)
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error creating server socket", e)
                 serverSocket = null
             }
         }
         
         override fun run() {
             var shouldLoop = true
+            var consecutiveFailures = 0
+            val maxConsecutiveFailures = 3
             
             while (shouldLoop) {
                 try {
@@ -351,6 +429,9 @@ class BluetoothService @Inject constructor(
                     
                     Log.d(TAG, "Waiting for connection...")
                     val socket = serverSocket?.accept()
+                    
+                    // Reset failure counter on successful accept
+                    consecutiveFailures = 0
                     
                     socket?.let {
                         if (ActivityCompat.checkSelfPermission(
@@ -389,8 +470,43 @@ class BluetoothService @Inject constructor(
                         }
                     }
                 } catch (e: IOException) {
-                    Log.e(TAG, "Socket accept() failed", e)
-                    shouldLoop = false
+                    consecutiveFailures++
+                    Log.e(TAG, "Socket accept() failed ($consecutiveFailures/$maxConsecutiveFailures): ${e.message}")
+                    
+                    if (consecutiveFailures >= maxConsecutiveFailures) {
+                        Log.e(TAG, "Too many consecutive failures, restarting server socket")
+                        try {
+                            serverSocket?.close()
+                        } catch (closeException: IOException) {
+                            Log.e(TAG, "Could not close the server socket", closeException)
+                        }
+                        
+                        // Try to recreate the server socket
+                        try {
+                            if (ActivityCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.BLUETOOTH_CONNECT
+                                ) == PackageManager.PERMISSION_GRANTED
+                            ) {
+                                serverSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord(
+                                    SERVICE_NAME,
+                                    SERVICE_UUID
+                                )
+                                Log.d(TAG, "Server socket recreated")
+                                consecutiveFailures = 0
+                            }
+                        } catch (recreateException: IOException) {
+                            Log.e(TAG, "Failed to recreate server socket", recreateException)
+                            shouldLoop = false
+                        }
+                    }
+                    
+                    // Add a small delay to avoid tight loop
+                    try {
+                        sleep(1000)
+                    } catch (interruptException: InterruptedException) {
+                        Log.e(TAG, "Accept thread sleep interrupted", interruptException)
+                    }
                 }
             }
             

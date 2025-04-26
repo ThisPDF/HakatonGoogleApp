@@ -1,6 +1,7 @@
 package com.example.smarthome.ui.bluetooth
 
 import android.bluetooth.BluetoothDevice
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.smarthome.data.bluetooth.BluetoothService
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlinx.coroutines.delay // Add import for delay
 
 data class BluetoothUiState(
     val pairedDevices: List<BluetoothDevice> = emptyList(),
@@ -64,11 +66,34 @@ class BluetoothViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 _uiState.update { it.copy(error = null) }
-                val success = bluetoothService.connectToDevice(device.address)
-                if (success) {
-                    _uiState.update { it.copy(connectedDevice = device) }
-                } else {
-                    _uiState.update { it.copy(error = "Failed to connect to device") }
+            
+                // Try to connect multiple times
+                var attempts = 0
+                val maxAttempts = 3
+                var success = false
+            
+                while (attempts < maxAttempts && !success) {
+                    attempts++
+                    Log.d(TAG, "Connection attempt $attempts of $maxAttempts to ${device.address}")
+                
+                    success = bluetoothService.connectToDevice(device.address)
+                
+                    if (success) {
+                        _uiState.update { it.copy(connectedDevice = device) }
+                        break
+                    } else if (attempts < maxAttempts) {
+                        // Wait before retrying
+                        delay(1000)
+                    }
+                }
+            
+                if (!success) {
+                    _uiState.update { 
+                        it.copy(
+                            error = "Failed to connect to device after $maxAttempts attempts. " +
+                                   "Make sure the device is in range and Bluetooth is enabled on both devices."
+                        ) 
+                    }
                 }
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = "Error: ${e.message}") }
@@ -88,5 +113,9 @@ class BluetoothViewModel @Inject constructor(
                 _uiState.update { it.copy(error = "Error syncing devices: ${e.message}") }
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "BluetoothViewModel"
     }
 }

@@ -4,21 +4,23 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.smarthome.ui.bluetooth.BluetoothScreen
 import com.example.smarthome.ui.dashboard.DashboardScreen
 import com.example.smarthome.ui.devices.DevicesScreen
 import com.example.smarthome.ui.settings.SettingsScreen
 import com.example.smarthome.ui.theme.SmartHomeTheme
 import dagger.hilt.android.AndroidEntryPoint
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.DevicesOther
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -41,28 +43,31 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainApp() {
     val navController = rememberNavController()
-    var selectedItem by remember { mutableStateOf(0) }
-    val items = listOf("Dashboard", "Devices", "Settings")
+    val items = listOf(
+        Screen.Dashboard,
+        Screen.Devices,
+        Screen.Bluetooth,
+        Screen.Settings
+    )
     
     Scaffold(
         bottomBar = {
             NavigationBar {
-                items.forEachIndexed { index, item ->
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val currentDestination = navBackStackEntry?.destination
+                
+                items.forEach { screen ->
                     NavigationBarItem(
-                        icon = { 
-                            when (index) {
-                                0 -> Icon(Icons.Default.Home, contentDescription = item)
-                                1 -> Icon(Icons.Default.DevicesOther, contentDescription = item)
-                                else -> Icon(Icons.Default.Settings, contentDescription = item)
-                            }
-                        },
-                        label = { Text(item) },
-                        selected = selectedItem == index,
+                        icon = { Icon(screen.icon, contentDescription = screen.title) },
+                        label = { Text(screen.title) },
+                        selected = currentDestination?.hierarchy?.any { it.route == screen.route } == true,
                         onClick = {
-                            selectedItem = index
-                            navController.navigate(item.lowercase()) {
-                                popUpTo(navController.graph.startDestinationId)
+                            navController.navigate(screen.route) {
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
+                                }
                                 launchSingleTop = true
+                                restoreState = true
                             }
                         }
                     )
@@ -72,18 +77,28 @@ fun MainApp() {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = "dashboard",
+            startDestination = Screen.Dashboard.route,
             modifier = Modifier.padding(innerPadding)
         ) {
-            composable("dashboard") {
+            composable(Screen.Dashboard.route) {
                 DashboardScreen()
             }
-            composable("devices") {
+            composable(Screen.Devices.route) {
                 DevicesScreen()
             }
-            composable("settings") {
+            composable(Screen.Bluetooth.route) {
+                BluetoothScreen()
+            }
+            composable(Screen.Settings.route) {
                 SettingsScreen()
             }
         }
     }
+}
+
+sealed class Screen(val route: String, val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    object Dashboard : Screen("dashboard", "Dashboard", Icons.Default.Home)
+    object Devices : Screen("devices", "Devices", Icons.Default.DevicesOther)
+    object Bluetooth : Screen("bluetooth", "Bluetooth", Icons.Default.Bluetooth)
+    object Settings : Screen("settings", "Settings", Icons.Default.Settings)
 }

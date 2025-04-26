@@ -32,17 +32,17 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             combine(
                 roomRepository.getRooms(),
-                deviceRepository.getDevices()
-            ) { rooms, devices ->
+                deviceRepository.devices
+            ) { rooms: List<Room>, devices: List<Device> ->
                 val selectedRoom = rooms.firstOrNull() ?: Room("", "")
                 DashboardUiState(
                     rooms = rooms,
                     selectedRoom = selectedRoom,
-                    devicesInSelectedRoom = devices.filter { it.roomId == selectedRoom.id },
+                    devicesInSelectedRoom = devices.filter { device -> device.roomId == selectedRoom.id },
                     isLoading = false
                 )
-            }.catch { e ->
-                _uiState.update { it.copy(error = e.message, isLoading = false) }
+            }.catch { exception ->
+                _uiState.update { currentState -> currentState.copy(error = exception.message, isLoading = false) }
             }.collect { state ->
                 _uiState.value = state
             }
@@ -51,12 +51,13 @@ class DashboardViewModel @Inject constructor(
 
     fun selectRoom(room: Room) {
         viewModelScope.launch {
-            _uiState.update { currentState ->
-                currentState.copy(
-                    selectedRoom = room,
-                    devicesInSelectedRoom = deviceRepository.getDevices().first()
-                        .filter { it.roomId == room.id }
-                )
+            deviceRepository.devices.first().let { devices ->
+                _uiState.update { currentState ->
+                    currentState.copy(
+                        selectedRoom = room,
+                        devicesInSelectedRoom = devices.filter { device -> device.roomId == room.id }
+                    )
+                }
             }
         }
     }
@@ -64,18 +65,6 @@ class DashboardViewModel @Inject constructor(
     fun toggleDevice(deviceId: String) {
         viewModelScope.launch {
             deviceRepository.toggleDevice(deviceId)
-            // In a real app, we would refresh the device state after toggling
-            // For now, we'll just update the UI state directly
-            _uiState.update { currentState ->
-                val updatedDevices = currentState.devicesInSelectedRoom.map { device ->
-                    if (device.id == deviceId) {
-                        device.copy(isOn = !device.isOn)
-                    } else {
-                        device
-                    }
-                }
-                currentState.copy(devicesInSelectedRoom = updatedDevices)
-            }
         }
     }
 }

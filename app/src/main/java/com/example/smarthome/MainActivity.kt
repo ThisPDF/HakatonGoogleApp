@@ -9,14 +9,13 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.smarthome.ui.dashboard.DashboardScreen
 import com.example.smarthome.ui.devices.DevicesScreen
+import com.example.smarthome.ui.dummydevices.DummyDevicesScreen
 import com.example.smarthome.ui.esp32.ESP32Screen
 import com.example.smarthome.ui.settings.SettingsScreen
 import com.example.smarthome.ui.theme.SmartHomeTheme
@@ -44,6 +43,7 @@ object SmartHomeIcons {
     val Devices = Icons.Default.Devices
     val Settings = Icons.Default.Settings
     val ESP32 = Icons.Default.Memory
+    val Examples = Icons.Default.Lightbulb
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -51,11 +51,11 @@ object SmartHomeIcons {
 fun MainApp() {
     val navController = rememberNavController()
     var selectedItem by remember { mutableStateOf(0) }
-    val items = listOf("Dashboard", "Devices", "ESP32", "Settings")
+    val items = listOf("Dashboard", "ESP32", "Examples", "Settings")
     val icons = listOf(
         SmartHomeIcons.Dashboard,
-        SmartHomeIcons.Devices,
         SmartHomeIcons.ESP32,
+        SmartHomeIcons.Examples,
         SmartHomeIcons.Settings
     )
     
@@ -87,11 +87,11 @@ fun MainApp() {
             composable("dashboard") {
                 DashboardScreen()
             }
-            composable("devices") {
-                DevicesScreen()
-            }
             composable("esp32") {
                 ESP32Screen()
+            }
+            composable("examples") {
+                DummyDevicesScreen()
             }
             composable("settings") {
                 SettingsScreen()

@@ -10,9 +10,7 @@ import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -29,6 +27,10 @@ fun ESP32Screen(
     val isConnected by viewModel.isConnected.collectAsState()
     val temperature by viewModel.temperatureData.collectAsState()
     val ledState by viewModel.ledState.collectAsState()
+    val isServerRunning by viewModel.isServerRunning.collectAsState()
+    
+    // For temperature simulation
+    var simulatedTemp by remember { mutableStateOf("25.0") }
     
     Scaffold(
         topBar = {
@@ -72,7 +74,7 @@ fun ESP32Screen(
                     }
                     
                     Button(onClick = { viewModel.toggleServer() }) {
-                        Text(text = "Toggle Server")
+                        Text(text = if (isServerRunning) "Stop Server" else "Start Server")
                     }
                 }
             }
@@ -108,6 +110,33 @@ fun ESP32Screen(
                         fontSize = 24.sp,
                         fontWeight = FontWeight.Bold
                     )
+                    
+                    // Temperature simulation for testing
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = simulatedTemp,
+                            onValueChange = { simulatedTemp = it },
+                            label = { Text("Simulate Temperature") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true
+                        )
+                        
+                        Button(
+                            onClick = {
+                                simulatedTemp.toFloatOrNull()?.let { temp ->
+                                    viewModel.simulateTemperatureUpdate(temp)
+                                }
+                            }
+                        ) {
+                            Text("Send")
+                        }
+                    }
                 }
             }
             

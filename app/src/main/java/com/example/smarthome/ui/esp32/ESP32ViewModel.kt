@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.smarthome.data.bluetooth.BluetoothGattServerService
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
 
@@ -23,25 +25,32 @@ class ESP32ViewModel @Inject constructor(
     val ledState: StateFlow<Boolean> = gattServerService.ledState
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     
-    private var isServerRunning = false
+    private val _isServerRunning = MutableStateFlow(false)
+    val isServerRunning: StateFlow<Boolean> = _isServerRunning.asStateFlow()
     
     fun toggleServer() {
-        if (isServerRunning) {
+        if (_isServerRunning.value) {
             gattServerService.stopServer()
         } else {
             gattServerService.startServer()
         }
-        isServerRunning = !isServerRunning
+        _isServerRunning.value = !_isServerRunning.value
     }
     
     fun toggleLed() {
         gattServerService.setLedState(!ledState.value)
     }
     
+    // Simulate temperature updates for testing
+    fun simulateTemperatureUpdate(temperature: Float) {
+        gattServerService.updateTemperature(temperature)
+    }
+    
     override fun onCleared() {
         super.onCleared()
-        if (isServerRunning) {
+        if (_isServerRunning.value) {
             gattServerService.stopServer()
         }
+        gattServerService.cleanup()
     }
 }

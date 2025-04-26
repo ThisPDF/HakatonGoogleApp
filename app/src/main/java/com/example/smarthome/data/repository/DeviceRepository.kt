@@ -25,13 +25,9 @@ class DeviceRepository @Inject constructor(
     private val repositoryScope = CoroutineScope(Dispatchers.Main)
 
     init {
-        // Initialize with mock data
+        // Initialize with ESP32 device only
         _devices.value = listOf(
-            Device("living_light", "Living Room Light", DeviceType.LIGHT, "living", false),
-            Device("kitchen_light", "Kitchen Light", DeviceType.LIGHT, "kitchen", true),
-            Device("thermostat", "Thermostat", DeviceType.THERMOSTAT, "living", true, "72"),
-            Device("front_lock", "Front Door", DeviceType.LOCK, "entrance", false),
-            Device("temp_sensor", "Temperature Sensor", DeviceType.SENSOR, "bedroom", true, "70.5")
+            Device("esp32_controller", "ESP32 Controller", DeviceType.SENSOR, "controllers", true, "ESP32")
         )
         
         // Listen for device requests from the watch

@@ -34,7 +34,7 @@ class DashboardViewModel @Inject constructor(
                 roomRepository.getRooms(),
                 deviceRepository.devices
             ) { rooms: List<Room>, devices: List<Device> ->
-                val selectedRoom = rooms.firstOrNull() ?: Room("", "")
+                val selectedRoom = rooms.firstOrNull { it.id == "controllers" } ?: rooms.firstOrNull() ?: Room("", "")
                 DashboardUiState(
                     rooms = rooms,
                     selectedRoom = selectedRoom,

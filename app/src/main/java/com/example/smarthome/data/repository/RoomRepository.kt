@@ -11,10 +11,11 @@ class RoomRepository @Inject constructor() {
     // Mock data for rooms
     fun getRooms(): Flow<List<Room>> = flow {
         val rooms = listOf(
+            Room("controllers", "Controllers"),
             Room("living", "Living Room"),
             Room("kitchen", "Kitchen"),
             Room("bedroom", "Bedroom"),
-            Room("entrance", "Entrance")
+            Room("bathroom", "Bathroom")
         )
         emit(rooms)
     }

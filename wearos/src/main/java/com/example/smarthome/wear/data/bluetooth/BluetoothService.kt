@@ -60,6 +60,9 @@ class BluetoothService @Inject constructor(
     private val _devices = MutableStateFlow<List<Device>>(emptyList())
     val devices: StateFlow<List<Device>> = _devices.asStateFlow()
     
+    private val _pairedDevices = MutableStateFlow<List<BluetoothDevice>>(emptyList())
+    val pairedDevices: StateFlow<List<BluetoothDevice>> = _pairedDevices.asStateFlow()
+    
     init {
         // Initialize with some mock devices for testing
         _devices.value = listOf(
@@ -68,6 +71,9 @@ class BluetoothService @Inject constructor(
             Device("3", "Kitchen Light", "LIGHT", "kitchen", false, null),
             Device("4", "Thermostat", "THERMOSTAT", "living_room", true, "72")
         )
+        
+        // Try to get paired devices at initialization
+        refreshPairedDevices()
     }
     
     private fun hasBluetoothPermissions(): Boolean {
@@ -92,10 +98,33 @@ class BluetoothService @Inject constructor(
         }
     }
     
+    fun refreshPairedDevices() {
+        if (!hasBluetoothPermissions()) {
+            Log.e(TAG, "Cannot refresh paired devices: missing permissions")
+            return
+        }
+        
+        try {
+            val adapter = bluetoothAdapter ?: return
+            if (!adapter.isEnabled) return
+            
+            val devices = adapter.bondedDevices?.toList() ?: emptyList()
+            Log.d(TAG, "Found ${devices.size} paired devices")
+            devices.forEach { device ->
+                Log.d(TAG, "Paired device: ${device.name} (${device.address})")
+            }
+            _pairedDevices.value = devices
+        } catch (e: Exception) {
+            Log.e(TAG, "Error refreshing paired devices: ${e.message}", e)
+        }
+    }
+    
     fun checkBluetoothStatus(): BluetoothStatus {
         // First check if the device has Bluetooth hardware
         val packageManager = context.packageManager
         val hasBluetooth = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH)
+        
+        Log.d(TAG, "Device has Bluetooth hardware: $hasBluetooth")
         
         if (!hasBluetooth) {
             return BluetoothStatus(
@@ -107,6 +136,7 @@ class BluetoothService @Inject constructor(
         }
         
         if (!hasBluetoothPermissions()) {
+            Log.d(TAG, "Bluetooth permissions not granted")
             return BluetoothStatus(
                 isAvailable = true,
                 isEnabled = false,
@@ -118,25 +148,25 @@ class BluetoothService @Inject constructor(
         val isAvailable = bluetoothAdapter != null
         val isEnabled = isAvailable && (bluetoothAdapter?.isEnabled == true)
         
-        val pairedDevices = if (isEnabled) {
-            try {
-                bluetoothAdapter?.bondedDevices?.size ?: 0
-            } catch (e: Exception) {
-                Log.e(TAG, "Error getting paired devices: ${e.message}", e)
-                0
-            }
-        } else 0
+        Log.d(TAG, "Bluetooth adapter available: $isAvailable, enabled: $isEnabled")
+        
+        // Refresh paired devices
+        refreshPairedDevices()
+        
+        val pairedDevices = _pairedDevices.value.size
         
         val connectedDevices = if (isEnabled) {
             try {
-                bluetoothAdapter?.bondedDevices?.count { device ->
+                _pairedDevices.value.count { device ->
                     device.bondState == BluetoothDevice.BOND_BONDED
-                } ?: 0
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error checking connected devices: ${e.message}", e)
                 0
             }
         } else 0
+        
+        Log.d(TAG, "Paired devices: $pairedDevices, connected: $connectedDevices")
         
         return BluetoothStatus(isAvailable, isEnabled, pairedDevices, connectedDevices)
     }
@@ -169,8 +199,11 @@ class BluetoothService @Inject constructor(
         _connectionState.value = ConnectionState.CONNECTING
         
         try {
+            // Refresh paired devices list
+            refreshPairedDevices()
+            
             // Get paired devices
-            val pairedDevices = bluetoothAdapter?.bondedDevices ?: emptySet()
+            val pairedDevices = _pairedDevices.value
             
             if (pairedDevices.isEmpty()) {
                 _error.value = "No paired devices found"
@@ -178,20 +211,22 @@ class BluetoothService @Inject constructor(
                 return@withContext false
             }
             
-            // Find the phone device - in a real app, you'd have a way to identify the specific device
-            val phoneDevice = pairedDevices.firstOrNull { device ->
-                // This is a simplified example - in a real app, you'd have a better way to identify the phone
-                device.name?.contains("Phone", ignoreCase = true) == true ||
-                device.name?.contains("Pixel", ignoreCase = true) == true ||
-                device.name?.contains("Galaxy", ignoreCase = true) == true ||
-                device.name?.contains("iPhone", ignoreCase = true) == true
+            // Log all paired devices for debugging
+            pairedDevices.forEach { device ->
+                Log.d(TAG, "Paired device: ${device.name} (${device.address})")
             }
+            
+            // Find the phone device - try to match any device that could be a phone
+            // We'll accept ANY paired device for now since we know the watch is paired with the phone
+            val phoneDevice = pairedDevices.firstOrNull()
             
             if (phoneDevice == null) {
                 _error.value = "Phone not found among paired devices"
                 _connectionState.value = ConnectionState.DISCONNECTED
                 return@withContext false
             }
+            
+            Log.d(TAG, "Selected device for connection: ${phoneDevice.name} (${phoneDevice.address})")
             
             // For now, let's simulate a successful connection
             // In a real app, you'd actually connect to the device

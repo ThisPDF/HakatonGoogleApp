@@ -8,6 +8,8 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -26,6 +28,7 @@ fun ConnectionScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val scrollState = rememberScrollState()
     
     // Define required Bluetooth permissions based on Android version
     val bluetoothPermissions = remember {
@@ -82,7 +85,9 @@ fun ConnectionScreen(
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier
+                .padding(16.dp)
+                .verticalScroll(scrollState)
         ) {
             Text(
                 text = "Smart Home",
@@ -119,7 +124,6 @@ fun ConnectionScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                         
                         // Add a button to open Bluetooth settings
-                        // This might help in case the Bluetooth adapter is just disabled
                         Button(
                             onClick = { 
                                 try {
@@ -173,7 +177,7 @@ fun ConnectionScreen(
                             Text("Check Again")
                         }
                     }
-                    uiState.pairedDevices == 0 -> {
+                    uiState.pairedDevicesCount == 0 -> {
                         Text(
                             text = "No paired devices found. Please pair your phone in Bluetooth settings",
                             style = MaterialTheme.typography.body1,
@@ -222,12 +226,30 @@ fun ConnectionScreen(
                             textAlign = TextAlign.Center,
                             color = MaterialTheme.colors.error
                         )
+                        
+                        if (uiState.pairedDevices.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Paired devices found: ${uiState.pairedDevices.size}",
+                                style = MaterialTheme.typography.body2,
+                                textAlign = TextAlign.Center
+                            )
+                            
+                            uiState.pairedDevices.forEach { device ->
+                                Chip(
+                                    onClick = { /* No action */ },
+                                    label = { Text(device.name ?: "Unknown") },
+                                    secondaryLabel = { Text(device.address) }
+                                )
+                            }
+                        }
+                        
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
                             onClick = { viewModel.connectToPhone() },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Retry")
+                            Text("Retry Connection")
                         }
                     }
                     else -> {
@@ -236,6 +258,24 @@ fun ConnectionScreen(
                             style = MaterialTheme.typography.body1,
                             textAlign = TextAlign.Center
                         )
+                        
+                        if (uiState.pairedDevices.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Paired devices found: ${uiState.pairedDevices.size}",
+                                style = MaterialTheme.typography.body2,
+                                textAlign = TextAlign.Center
+                            )
+                            
+                            uiState.pairedDevices.forEach { device ->
+                                Chip(
+                                    onClick = { /* No action */ },
+                                    label = { Text(device.name ?: "Unknown") },
+                                    secondaryLabel = { Text(device.address) }
+                                )
+                            }
+                        }
+                        
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
                             onClick = { viewModel.connectToPhone() },

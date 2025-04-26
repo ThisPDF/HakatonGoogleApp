@@ -6,17 +6,15 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.wear.compose.material.MaterialTheme
-import androidx.wear.compose.material.Surface
-import com.example.smarthome.wear.ui.sensors.SensorsScreen
+import androidx.wear.compose.material.Scaffold
+import androidx.wear.compose.material.TimeText
 import com.example.smarthome.wear.ui.theme.SmartHomeTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -55,12 +53,7 @@ class MainActivity : ComponentActivity() {
         
         setContent {
             SmartHomeTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colors.background
-                ) {
-                    WearApp()
-                }
+                WearApp()
             }
         }
     }
@@ -68,12 +61,22 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun WearApp(navController: NavHostController = rememberNavController()) {
-    NavHost(
-        navController = navController,
-        startDestination = "sensors"
+    Scaffold(
+        timeText = { TimeText() }
     ) {
-        composable("sensors") {
-            SensorsScreen()
+        NavHost(
+            navController = navController,
+            startDestination = "sensors"
+        ) {
+            composable("sensors") {
+                SensorsScreen()
+            }
         }
     }
+}
+
+@Composable
+fun SensorsScreen() {
+    // Placeholder for the sensors screen
+    // We'll implement this later
 }

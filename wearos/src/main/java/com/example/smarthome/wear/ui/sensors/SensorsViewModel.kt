@@ -2,65 +2,75 @@ package com.example.smarthome.wear.ui.sensors
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.smarthome.wear.data.repository.LocationRepository
 import com.example.smarthome.wear.data.repository.SensorDataRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class SensorsViewModel @Inject constructor(
-    private val sensorDataRepository: SensorDataRepository,
-    private val locationRepository: LocationRepository
+    private val sensorDataRepository: SensorDataRepository
 ) : ViewModel() {
     
-    val heartRate = sensorDataRepository.heartRate
-    val steps = sensorDataRepository.steps
-    val location = locationRepository.location
+    private val _heartRate = MutableStateFlow(0f)
+    val heartRate: StateFlow<Float> = _heartRate.asStateFlow()
     
-    private val _isSensorMeasuring = sensorDataRepository.isMeasuring
-    private val _isLocationTracking = locationRepository.isTracking
+    private val _steps = MutableStateFlow(0)
+    val steps: StateFlow<Int> = _steps.asStateFlow()
     
-    private val _isDataCollectionActive = MutableStateFlow(false)
-    val isDataCollectionActive: StateFlow<Boolean> = _isDataCollectionActive.asStateFlow()
+    private val _isMeasuring = MutableStateFlow(false)
+    val isMeasuring: StateFlow<Boolean> = _isMeasuring.asStateFlow()
+    
+    private val _sensorsAvailable = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val sensorsAvailable: StateFlow<Map<String, Boolean>> = _sensorsAvailable.asStateFlow()
     
     init {
         viewModelScope.launch {
-            combine(_isSensorMeasuring, _isLocationTracking) { sensorActive, locationActive ->
-                sensorActive || locationActive
-            }.collect {
-                _isDataCollectionActive.value = it
+            sensorDataRepository.heartRate.collectLatest { heartRate ->
+                _heartRate.value = heartRate
+            }
+        }
+        
+        viewModelScope.launch {
+            sensorDataRepository.steps.collectLatest { steps ->
+                _steps.value = steps
+            }
+        }
+        
+        viewModelScope.launch {
+            sensorDataRepository.isMeasuring.collectLatest { isMeasuring ->
+                _isMeasuring.value = isMeasuring
             }
         }
     }
     
-    fun startDataCollection() {
+    fun checkSensorsAvailability() {
         viewModelScope.launch {
-            sensorDataRepository.startMeasurement()
-            locationRepository.startLocationTracking()
+            _sensorsAvailable.value = sensorDataRepository.checkSensorsAvailability()
         }
     }
     
-    fun stopDataCollection() {
+    fun startMeasurements() {
         viewModelScope.launch {
-            sensorDataRepository.stopMeasurement()
-            locationRepository.stopLocationTracking()
+            sensorDataRepository.startHeartRateMeasurement()
+            sensorDataRepository.startStepsMeasurement()
         }
     }
     
-    fun getLastLocation() {
-        locationRepository.getLastLocation()
+    fun stopMeasurements() {
+        viewModelScope.launch {
+            sensorDataRepository.stopMeasurements()
+        }
     }
     
     override fun onCleared() {
         super.onCleared()
         viewModelScope.launch {
-            sensorDataRepository.stopMeasurement()
-            locationRepository.stopLocationTracking()
+            sensorDataRepository.stopMeasurements()
         }
     }
 }

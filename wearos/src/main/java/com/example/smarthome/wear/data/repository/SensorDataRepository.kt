@@ -4,12 +4,12 @@ import android.content.Context
 import android.util.Log
 import androidx.health.services.client.HealthServices
 import androidx.health.services.client.MeasureCallback
+import androidx.health.services.client.data.Availability
 import androidx.health.services.client.data.DataPointContainer
 import androidx.health.services.client.data.DataType
 import androidx.health.services.client.data.DataTypeAvailability
-import androidx.health.services.client.data.HeartRateAccuracy
-import androidx.health.services.client.data.HeartRateData
-import androidx.health.services.client.data.StepsData
+import androidx.health.services.client.data.DeltaDataType
+import androidx.health.services.client.data.SampleDataPoint
 import com.example.smarthome.wear.data.wearable.WearableDataService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -42,83 +42,132 @@ class SensorDataRepository @Inject constructor(
     private val _isMeasuring = MutableStateFlow(false)
     val isMeasuring: StateFlow<Boolean> = _isMeasuring.asStateFlow()
     
-    private val measureCallback = object : MeasureCallback {
-        override fun onAvailabilityChanged(dataType: DataType, availability: DataTypeAvailability) {
-            Log.d(TAG, "Availability changed for $dataType: $availability")
-        }
-
-        override fun onDataReceived(data: DataPointContainer) {
-            // Process heart rate data
-            data.getData(DataType.HEART_RATE_BPM).firstOrNull()?.let { dataPoint ->
-                val heartRateData = dataPoint.value as HeartRateData
-                val heartRateBpm = heartRateData.bpm
-                val accuracy = heartRateData.accuracy
+    private var heartRateCallback: MeasureCallback? = null
+    private var stepsCallback: MeasureCallback? = null
+    
+    /**
+     * Start measuring heart rate
+     */
+    suspend fun startHeartRateMeasurement() {
+        try {
+            if (heartRateCallback != null) return
+            
+            heartRateCallback = object : MeasureCallback {
+                override fun onAvailabilityChanged(
+                    dataType: DeltaDataType<*, *>,
+                    availability: Availability
+                ) {
+                    Log.d(TAG, "Heart rate availability changed: $availability")
+                }
                 
-                if (accuracy != HeartRateAccuracy.UNKNOWN) {
-                    _heartRate.value = heartRateBpm
-                    
-                    // Send heart rate data to phone
-                    scope.launch {
-                        wearableDataService.sendSensorData(heartRateBpm, _steps.value)
+                override fun onDataReceived(dataPoints: DataPointContainer) {
+                    dataPoints.getData(DataType.HEART_RATE_BPM).firstOrNull()?.let { dataPoint ->
+                        val heartRateBpm = (dataPoint as SampleDataPoint<Float>).value
+                        _heartRate.value = heartRateBpm
+                        
+                        // Send heart rate data to phone
+                        scope.launch {
+                            wearableDataService.sendSensorData(heartRateBpm, _steps.value)
+                        }
+                        
+                        Log.d(TAG, "Heart rate: $heartRateBpm BPM")
                     }
-                    
-                    Log.d(TAG, "Heart rate: $heartRateBpm BPM, accuracy: $accuracy")
                 }
             }
             
-            // Process steps data
-            data.getData(DataType.STEPS).firstOrNull()?.let { dataPoint ->
-                val stepsData = dataPoint.value as StepsData
-                val stepsCount = stepsData.count
-                
-                _steps.value = stepsCount
-                
-                // Send steps data to phone
-                scope.launch {
-                    wearableDataService.sendSensorData(_heartRate.value, stepsCount)
-                }
-                
-                Log.d(TAG, "Steps: $stepsCount")
-            }
+            measureClient.registerCallback(
+                DataType.HEART_RATE_BPM,
+                heartRateCallback!!
+            )
+            
+            _isMeasuring.value = true
+            Log.d(TAG, "Started measuring heart rate")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start heart rate measurement", e)
         }
     }
     
     /**
-     * Start measuring heart rate and steps
+     * Start measuring steps
      */
-    suspend fun startMeasurement() {
+    suspend fun startStepsMeasurement() {
+        try {
+            if (stepsCallback != null) return
+            
+            stepsCallback = object : MeasureCallback {
+                override fun onAvailabilityChanged(
+                    dataType: DeltaDataType<*, *>,
+                    availability: Availability
+                ) {
+                    Log.d(TAG, "Steps availability changed: $availability")
+                }
+                
+                override fun onDataReceived(dataPoints: DataPointContainer) {
+                    dataPoints.getData(DeltaDataType.STEPS).firstOrNull()?.let { dataPoint ->
+                        val stepsCount = dataPoint.value.toInt()
+                        _steps.value = stepsCount
+                        
+                        // Send steps data to phone
+                        scope.launch {
+                            wearableDataService.sendSensorData(_heartRate.value, stepsCount)
+                        }
+                        
+                        Log.d(TAG, "Steps: $stepsCount")
+                    }
+                }
+            }
+            
+            measureClient.registerCallback(
+                DeltaDataType.STEPS,
+                stepsCallback!!
+            )
+            
+            _isMeasuring.value = true
+            Log.d(TAG, "Started measuring steps")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start steps measurement", e)
+        }
+    }
+    
+    /**
+     * Stop all measurements
+     */
+    suspend fun stopMeasurements() {
+        try {
+            heartRateCallback?.let {
+                measureClient.unregisterCallback(it)
+                heartRateCallback = null
+            }
+            
+            stepsCallback?.let {
+                measureClient.unregisterCallback(it)
+                stepsCallback = null
+            }
+            
+            _isMeasuring.value = false
+            Log.d(TAG, "Stopped all measurements")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop measurements", e)
+        }
+    }
+    
+    /**
+     * Check if sensors are available
+     */
+    suspend fun checkSensorsAvailability(): Map<String, Boolean> {
+        val result = mutableMapOf<String, Boolean>()
+        
         try {
             val capabilities = measureClient.getCapabilities()
             
-            if (DataType.HEART_RATE_BPM in capabilities.supportedDataTypes &&
-                DataType.STEPS in capabilities.supportedDataTypes) {
-                
-                val request = androidx.health.services.client.MeasureRequest.Builder()
-                    .addDataType(DataType.HEART_RATE_BPM)
-                    .addDataType(DataType.STEPS)
-                    .build()
-                
-                measureClient.registerMeasureCallback(request, measureCallback)
-                _isMeasuring.value = true
-                Log.d(TAG, "Started measuring heart rate and steps")
-            } else {
-                Log.w(TAG, "Heart rate or steps measurement not supported on this device")
-            }
+            result["heartRate"] = DataType.HEART_RATE_BPM in capabilities.supportedDataTypes
+            result["steps"] = DeltaDataType.STEPS in capabilities.supportedDataTypes
+            
+            Log.d(TAG, "Sensors availability: $result")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start measurement", e)
+            Log.e(TAG, "Failed to check sensors availability", e)
         }
-    }
-    
-    /**
-     * Stop measuring heart rate and steps
-     */
-    suspend fun stopMeasurement() {
-        try {
-            measureClient.unregisterMeasureCallback(measureCallback)
-            _isMeasuring.value = false
-            Log.d(TAG, "Stopped measuring heart rate and steps")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to stop measurement", e)
-        }
+        
+        return result
     }
 }

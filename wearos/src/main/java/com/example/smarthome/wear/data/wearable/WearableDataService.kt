@@ -12,7 +12,6 @@ import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
-import com.example.smarthome.wear.data.SensorDataRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -180,7 +179,8 @@ class WearableDataService @Inject constructor(
     
     private fun processSensorData(dataItem: DataItem) {
         try {
-            val dataMap = DataMapItem.fromDataItem(dataItem).dataMap
+            val dataMapItem = DataMapItem.fromDataItem(dataItem)
+            val dataMap = dataMapItem.dataMap
             val sensorMap = mutableMapOf<String, Any>()
             
             // Process heart rate if available
@@ -196,12 +196,14 @@ class WearableDataService @Inject constructor(
             // Process accelerometer data if available
             if (dataMap.containsKey("accelerometer")) {
                 val accDataMap = dataMap.getDataMap("accelerometer")
-                val accData = AccelerometerData(
-                    accDataMap.getFloat("x"),
-                    accDataMap.getFloat("y"),
-                    accDataMap.getFloat("z")
-                )
-                sensorMap["accelerometer"] = accData
+                if (accDataMap != null) {
+                    val accData = AccelerometerData(
+                        accDataMap.getFloat("x"),
+                        accDataMap.getFloat("y"),
+                        accDataMap.getFloat("z")
+                    )
+                    sensorMap["accelerometer"] = accData
+                }
             }
             
             // Update the sensor data flow
@@ -214,7 +216,8 @@ class WearableDataService @Inject constructor(
     
     private fun processLocationData(dataItem: DataItem) {
         try {
-            val dataMap = DataMapItem.fromDataItem(dataItem).dataMap
+            val dataMapItem = DataMapItem.fromDataItem(dataItem)
+            val dataMap = dataMapItem.dataMap
             
             if (dataMap.containsKey("latitude") && dataMap.containsKey("longitude")) {
                 val locationData = LocationData(

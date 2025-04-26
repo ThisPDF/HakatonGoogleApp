@@ -63,9 +63,9 @@ class BluetoothGattServerService @Inject constructor(
     private val connectedDevices = mutableListOf<BluetoothDevice>()
     
     // Background thread for BLE operations
-    private val bleHandlerThread = HandlerThread("BLEThread")
+    private var bleHandlerThread = HandlerThread("BLEThread")
     private var bleHandler: Handler? = null
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private var mainHandler = Handler(Looper.getMainLooper())
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
     
     // Thread state tracking

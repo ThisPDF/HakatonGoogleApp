@@ -11,12 +11,13 @@ import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
@@ -28,7 +29,7 @@ import javax.inject.Singleton
 
 @Singleton
 class BluetoothService @Inject constructor(
-    @ApplicationContext private val context: Context
+   @ApplicationContext private val context: Context
 ) {
     private val TAG = "BluetoothService"
     
@@ -68,6 +69,9 @@ class BluetoothService @Inject constructor(
     private var outputStream: OutputStream? = null
     private val MAX_CONNECTION_RETRIES = 3
     private val CONNECTION_TIMEOUT = 10000L // 10 seconds
+    
+    // Create a coroutine scope for this service
+    private val serviceScope = CoroutineScope(Dispatchers.IO)
     
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -272,7 +276,7 @@ class BluetoothService @Inject constructor(
                         retryCount++
                         if (retryCount < MAX_CONNECTION_RETRIES) {
                             Log.d(TAG, "Retrying connection (${retryCount}/${MAX_CONNECTION_RETRIES})")
-                            delay(2000) // Wait 2 seconds before retrying
+                            kotlinx.coroutines.delay(2000) // Wait 2 seconds before retrying
                         }
                     }
                 }
@@ -334,9 +338,6 @@ class BluetoothService @Inject constructor(
             } ?: false
             
             if (connected) {
-                this.socket = socket
-                
-                // Set up input and output  {
                 this.socket = socket
                 
                 // Set up input and output streams
@@ -444,7 +445,7 @@ class BluetoothService @Inject constructor(
     }
     
     private fun startListening() {
-        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+        serviceScope.launch {
             val buffer = ByteArray(1024)
             
             try {
@@ -479,10 +480,10 @@ class BluetoothService @Inject constructor(
                         }
                         
                         // Small delay to prevent tight loop
-                        delay(100)
+                        kotlinx.coroutines.delay(100)
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in listening loop: ${e.message}")
-                        delay(1000) // Wait before retrying
+                        kotlinx.coroutines.delay(1000) // Wait before retrying
                     }
                 }
             } catch (e: Exception) {
@@ -519,7 +520,7 @@ class BluetoothService @Inject constructor(
             sendData(command)
             
             // Simulate a delay for network request
-            delay(500)
+            kotlinx.coroutines.delay(500)
             
             return@withContext true
         } catch (e: Exception) {
@@ -606,7 +607,7 @@ class BluetoothService @Inject constructor(
             _devices.value = devices
             
             // Send command to phone
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            serviceScope.launch {
                 sendCommand(deviceId, "TOGGLE")
             }
         }
@@ -623,7 +624,7 @@ class BluetoothService @Inject constructor(
             _devices.value = devices
             
             // Send command to phone
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            serviceScope.launch {
                 sendCommand(deviceId, "VALUE:$value")
             }
         }

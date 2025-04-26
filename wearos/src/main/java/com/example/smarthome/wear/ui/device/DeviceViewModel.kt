@@ -55,27 +55,13 @@ class DeviceViewModel @Inject constructor(
 
     fun toggleDevice() {
         val device = _uiState.value.device ?: return
-        viewModelScope.launch {
-            try {
-                deviceRepository.toggleDevice(device.id)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error toggling device: ${e.message}", e)
-                _uiState.update { it.copy(error = "Error toggling device: ${e.message}") }
-            }
-        }
+        deviceRepository.toggleDevice(device.id)
     }
 
     fun adjustTemperature(value: Int) {
         val device = _uiState.value.device ?: return
-        viewModelScope.launch {
-            try {
-                if (device.type == "THERMOSTAT") {
-                    deviceRepository.setDeviceValue(device.id, value)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error adjusting temperature: ${e.message}", e)
-                _uiState.update { it.copy(error = "Error adjusting temperature: ${e.message}") }
-            }
+        if (device.type == "THERMOSTAT") {
+            deviceRepository.setDeviceValue(device.id, value)
         }
     }
 

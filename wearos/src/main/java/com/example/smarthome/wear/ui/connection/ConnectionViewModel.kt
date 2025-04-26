@@ -146,6 +146,11 @@ class ConnectionViewModel @Inject constructor(
             _uiState.update { it.copy(error = "Disconnect error: ${e.message}") }
         }
     }
+    
+    fun enableDemoMode() {
+        _uiState.update { it.copy(demoMode = true) }
+        Log.d(TAG, "Demo mode enabled")
+    }
 
     data class ConnectionUiState(
         val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
@@ -154,7 +159,8 @@ class ConnectionViewModel @Inject constructor(
         val isBluetoothEnabled: Boolean = false,
         val pairedDevicesCount: Int = 0,
         val pairedDevices: List<BluetoothDevice> = emptyList(),
-        val error: String? = null
+        val error: String? = null,
+        val demoMode: Boolean = false
     )
 
     enum class ConnectionState {

@@ -70,7 +70,7 @@ fun ConnectionScreen(
     
     // If connected, navigate to dashboard
     LaunchedEffect(uiState.connectionState) {
-        if (uiState.connectionState == ConnectionState.CONNECTED) {
+        if (uiState.connectionState == ConnectionState.CONNECTED || uiState.demoMode) {
             onConnected()
         }
     }
@@ -107,6 +107,17 @@ fun ConnectionScreen(
                 ) {
                     Text("Grant Permissions")
                 }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                // Add demo mode button
+                Button(
+                    onClick = { viewModel.enableDemoMode() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(backgroundColor = MaterialTheme.colors.secondary)
+                ) {
+                    Text("Use Demo Mode")
+                }
             } else {
                 when {
                     !uiState.isBluetoothAvailable -> {
@@ -118,28 +129,12 @@ fun ConnectionScreen(
                         
                         Spacer(modifier = Modifier.height(8.dp))
                         
-                        // Add a button to open Bluetooth settings
-                        // This might help in case the Bluetooth adapter is just disabled
+                        // Add demo mode button
                         Button(
-                            onClick = { 
-                                try {
-                                    context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
-                                } catch (e: Exception) {
-                                    // Ignore if settings can't be opened
-                                }
-                            },
+                            onClick = { viewModel.enableDemoMode() },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Open Bluetooth Settings")
-                        }
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-                        
-                        Button(
-                            onClick = { viewModel.checkBluetoothStatus() },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Check Again")
+                            Text("Use Demo Mode")
                         }
                     }
                     !uiState.isBluetoothEnabled -> {
@@ -172,6 +167,17 @@ fun ConnectionScreen(
                         ) {
                             Text("Check Again")
                         }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        // Add demo mode button
+                        Button(
+                            onClick = { viewModel.enableDemoMode() },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(backgroundColor = MaterialTheme.colors.secondary)
+                        ) {
+                            Text("Use Demo Mode")
+                        }
                     }
                     uiState.pairedDevicesCount == 0 -> {
                         Text(
@@ -203,6 +209,17 @@ fun ConnectionScreen(
                         ) {
                             Text("Check Again")
                         }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        // Add demo mode button
+                        Button(
+                            onClick = { viewModel.enableDemoMode() },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(backgroundColor = MaterialTheme.colors.secondary)
+                        ) {
+                            Text("Use Demo Mode")
+                        }
                     }
                     uiState.isConnecting -> {
                         CircularProgressIndicator(
@@ -229,6 +246,17 @@ fun ConnectionScreen(
                         ) {
                             Text("Retry")
                         }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        // Add demo mode button
+                        Button(
+                            onClick = { viewModel.enableDemoMode() },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(backgroundColor = MaterialTheme.colors.secondary)
+                        ) {
+                            Text("Use Demo Mode")
+                        }
                     }
                     else -> {
                         Text(
@@ -242,6 +270,17 @@ fun ConnectionScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("Connect")
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        // Add demo mode button
+                        Button(
+                            onClick = { viewModel.enableDemoMode() },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(backgroundColor = MaterialTheme.colors.secondary)
+                        ) {
+                            Text("Use Demo Mode")
                         }
                     }
                 }

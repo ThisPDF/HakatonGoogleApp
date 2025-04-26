@@ -8,6 +8,7 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material.*
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.smarthome.wear.data.models.Device
+import com.example.smarthome.wear.data.models.QuickAction
 import com.example.smarthome.wear.ui.theme.IconFromDrawable
 import com.example.smarthome.wear.ui.theme.WearIcons
 
@@ -35,7 +36,7 @@ fun DashboardScreen(
                 onClick = { viewModel.executeQuickAction(action.id) },
                 label = { Text(action.name) },
                 icon = {
-                    when (action.type) {
+                    when (action.actionType) { // Changed from action.type to action.actionType
                         "LIGHT" -> IconFromDrawable(WearIcons.Light, contentDescription = null)
                         "LOCK" -> IconFromDrawable(WearIcons.Lock, contentDescription = null)
                         else -> IconFromDrawable(WearIcons.Device, contentDescription = null)

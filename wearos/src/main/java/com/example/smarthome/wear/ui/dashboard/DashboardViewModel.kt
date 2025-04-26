@@ -13,12 +13,19 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+data class DashboardUiState(
+    val devices: List<Device> = emptyList(),
+    val quickActions: List<QuickAction> = emptyList(),
+    val isLoading: Boolean = false,
+    val error: String? = null
+)
+
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     private val deviceRepository: DeviceRepository
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(DashboardUiState())
+    private val _uiState = MutableStateFlow(DashboardUiState(isLoading = true))
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
 
     init {
@@ -28,62 +35,42 @@ class DashboardViewModel @Inject constructor(
 
     private fun loadDevices() {
         viewModelScope.launch {
-            deviceRepository.devices.collect { devices ->
-                _uiState.update { it.copy(devices = devices) }
+            try {
+                _uiState.update { it.copy(isLoading = true) }
+                val devices = deviceRepository.getDevices()
+                _uiState.update { it.copy(devices = devices, isLoading = false, error = null) }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isLoading = false, error = e.message) }
             }
         }
     }
 
     private fun loadQuickActions() {
-        // In a real app, these would come from a repository
-        val quickActions = listOf(
-            QuickAction("qa1", "All Lights", "LIGHT"),
-            QuickAction("qa2", "Lock Home", "LOCK"),
-            QuickAction("qa3", "Night Mode", "SCENE")
-        )
-        _uiState.update { it.copy(quickActions = quickActions) }
-    }
-
-    fun executeQuickAction(actionId: String) {
         viewModelScope.launch {
-            when (actionId) {
-                "qa1" -> {
-                    // Toggle all lights
-                    uiState.value.devices
-                        .filter { it.type == "LIGHT" }
-                        .forEach { device ->
-                            deviceRepository.toggleDevice(device.id, !device.isOn)
-                        }
-                }
-                "qa2" -> {
-                    // Lock all doors
-                    uiState.value.devices
-                        .filter { it.type == "LOCK" }
-                        .forEach { device ->
-                            deviceRepository.toggleDevice(device.id, true)
-                        }
-                }
-                "qa3" -> {
-                    // Night mode - turn off lights, lock doors
-                    uiState.value.devices
-                        .filter { it.type == "LIGHT" }
-                        .forEach { device ->
-                            deviceRepository.toggleDevice(device.id, false)
-                        }
-                    uiState.value.devices
-                        .filter { it.type == "LOCK" }
-                        .forEach { device ->
-                            deviceRepository.toggleDevice(device.id, true)
-                        }
-                }
+            try {
+                val quickActions = deviceRepository.getQuickActions()
+                _uiState.update { it.copy(quickActions = quickActions) }
+            } catch (e: Exception) {
+                // Just log the error, don't update UI state as we already have devices
+                e.printStackTrace()
             }
         }
     }
 
-    data class DashboardUiState(
-        val devices: List<Device> = emptyList(),
-        val quickActions: List<QuickAction> = emptyList(),
-        val isLoading: Boolean = false,
-        val error: String? = null
-    )
+    fun executeQuickAction(actionId: String) {
+        viewModelScope.launch {
+            try {
+                deviceRepository.executeQuickAction(actionId)
+                // Refresh devices after executing the action
+                loadDevices()
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = e.message) }
+            }
+        }
+    }
+
+    fun refreshData() {
+        loadDevices()
+        loadQuickActions()
+    }
 }

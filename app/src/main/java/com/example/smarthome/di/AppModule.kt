@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import com.example.smarthome.data.bluetooth.BluetoothGattServerService
 import com.example.smarthome.data.bluetooth.BluetoothService
+import com.example.smarthome.data.preferences.UserPreferencesRepository
 import com.example.smarthome.data.repository.DeviceRepository
 import com.example.smarthome.data.repository.RoomRepository
 import dagger.Module
@@ -48,5 +49,13 @@ object AppModule {
         bluetoothManager: BluetoothManager
     ): BluetoothGattServerService {
         return BluetoothGattServerService(context, bluetoothManager)
+    }
+    
+    @Provides
+    @Singleton
+    fun provideUserPreferencesRepository(
+        @ApplicationContext context: Context
+    ): UserPreferencesRepository {
+        return UserPreferencesRepository(context)
     }
 }

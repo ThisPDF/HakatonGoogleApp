@@ -16,6 +16,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val userPreferences by viewModel.userPreferences.collectAsState()
     
     Scaffold(
         topBar = {
@@ -50,7 +51,7 @@ fun SettingsScreen(
                     ) {
                         Text("Dark Mode")
                         Switch(
-                            checked = uiState.isDarkMode,
+                            checked = userPreferences.useDarkTheme ?: false,
                             onCheckedChange = { viewModel.toggleDarkMode() }
                         )
                     }
@@ -62,7 +63,7 @@ fun SettingsScreen(
                     ) {
                         Text("Notifications")
                         Switch(
-                            checked = uiState.notificationsEnabled,
+                            checked = userPreferences.notificationsEnabled,
                             onCheckedChange = { viewModel.toggleNotifications() }
                         )
                     }

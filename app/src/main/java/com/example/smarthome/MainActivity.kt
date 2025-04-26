@@ -14,7 +14,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.smarthome.ui.dashboard.DashboardScreen
-import com.example.smarthome.ui.devices.DevicesScreen
 import com.example.smarthome.ui.dummydevices.DummyDevicesScreen
 import com.example.smarthome.ui.esp32.ESP32Screen
 import com.example.smarthome.ui.settings.SettingsScreen

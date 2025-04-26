@@ -2,6 +2,7 @@ package com.example.smarthome.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.smarthome.data.preferences.UserPreferencesViewModel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,8 +12,6 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class SettingsUiState(
-    val isDarkMode: Boolean = false,
-    val notificationsEnabled: Boolean = true,
     val controllerIp: String = "192.168.1.100",
     val isSaving: Boolean = false,
     val saveSuccess: Boolean = false,
@@ -20,17 +19,21 @@ data class SettingsUiState(
 )
 
 @HiltViewModel
-class SettingsViewModel @Inject constructor() : ViewModel() {
+class SettingsViewModel @Inject constructor(
+    private val userPreferencesViewModel: UserPreferencesViewModel
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+    
+    val userPreferences = userPreferencesViewModel.userPreferences
 
     fun toggleDarkMode() {
-        _uiState.update { it.copy(isDarkMode = !it.isDarkMode) }
+        userPreferencesViewModel.toggleDarkTheme()
     }
 
     fun toggleNotifications() {
-        _uiState.update { it.copy(notificationsEnabled = !it.notificationsEnabled) }
+        userPreferencesViewModel.toggleNotifications()
     }
 
     fun updateControllerIp(ip: String) {

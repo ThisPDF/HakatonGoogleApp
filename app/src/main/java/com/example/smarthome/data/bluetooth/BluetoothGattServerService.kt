@@ -1,15 +1,19 @@
 package com.example.smarthome.data.bluetooth
 
+import android.Manifest
 import android.bluetooth.*
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
 import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.ParcelUuid
 import android.util.Log
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -67,10 +71,30 @@ class BluetoothGattServerService @Inject constructor(
         bleHandlerThread.start()
         bleHandler = Handler(bleHandlerThread.looper)
     }
+
+    // First, add a method to check for Bluetooth permissions
+    private fun hasBluetoothPermissions(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+    }
     
     // Callback for GATT server events
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+            if (!hasBluetoothPermissions()) {
+                Log.e(TAG, "Bluetooth permissions not granted")
+                return
+            }
+            
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 Log.i(TAG, "Device connected: ${device.address}")
                 synchronized(connectedDevices) {
@@ -92,6 +116,14 @@ class BluetoothGattServerService @Inject constructor(
             offset: Int,
             characteristic: BluetoothGattCharacteristic
         ) {
+            if (!hasBluetoothPermissions()) {
+                Log.e(TAG, "Bluetooth permissions not granted")
+                bluetoothGattServer?.sendResponse(
+                    device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
+                )
+                return
+            }
+            
             when (characteristic.uuid) {
                 LED_CONTROL_CHARACTERISTIC_UUID -> {
                     val value = byteArrayOf(if (_ledState.value) 1 else 0)
@@ -125,6 +157,16 @@ class BluetoothGattServerService @Inject constructor(
             offset: Int,
             value: ByteArray
         ) {
+            if (!hasBluetoothPermissions()) {
+                Log.e(TAG, "Bluetooth permissions not granted")
+                if (responseNeeded) {
+                    bluetoothGattServer?.sendResponse(
+                        device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
+                    )
+                }
+                return
+            }
+            
             when (characteristic.uuid) {
                 LED_CONTROL_CHARACTERISTIC_UUID -> {
                     if (value.isNotEmpty()) {
@@ -173,6 +215,14 @@ class BluetoothGattServerService @Inject constructor(
             offset: Int,
             descriptor: BluetoothGattDescriptor
         ) {
+            if (!hasBluetoothPermissions()) {
+                Log.e(TAG, "Bluetooth permissions not granted")
+                bluetoothGattServer?.sendResponse(
+                    device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
+                )
+                return
+            }
+            
             if (descriptor.uuid == CLIENT_CONFIG_DESCRIPTOR_UUID) {
                 val value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 bluetoothGattServer?.sendResponse(
@@ -194,6 +244,16 @@ class BluetoothGattServerService @Inject constructor(
             offset: Int,
             value: ByteArray
         ) {
+            if (!hasBluetoothPermissions()) {
+                Log.e(TAG, "Bluetooth permissions not granted")
+                if (responseNeeded) {
+                    bluetoothGattServer?.sendResponse(
+                        device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
+                    )
+                }
+                return
+            }
+            
             if (descriptor.uuid == CLIENT_CONFIG_DESCRIPTOR_UUID) {
                 // Handle notification/indication subscription
                 if (responseNeeded) {
@@ -229,6 +289,12 @@ class BluetoothGattServerService @Inject constructor(
         // Run on background thread
         bleHandler.post {
             try {
+                // Check for permissions first
+                if (!hasBluetoothPermissions()) {
+                    Log.e(TAG, "Cannot start GATT server: Bluetooth permissions not granted")
+                    return@post
+                }
+            
                 val bluetoothAdapter = bluetoothManager.adapter
                 
                 if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
@@ -377,6 +443,12 @@ class BluetoothGattServerService @Inject constructor(
     fun setLedState(on: Boolean) {
         _ledState.value = on
         
+        // Check permissions before notifying connected devices
+        if (!hasBluetoothPermissions()) {
+            Log.e(TAG, "Cannot notify LED state change: Bluetooth permissions not granted")
+            return
+        }
+        
         // Notify connected devices about the LED state change
         bleHandler.post {
             try {
@@ -400,6 +472,12 @@ class BluetoothGattServerService @Inject constructor(
     // Update temperature data
     fun updateTemperature(temperature: Float) {
         _temperatureData.value = temperature
+        
+        // Check permissions before notifying connected devices
+        if (!hasBluetoothPermissions()) {
+            Log.e(TAG, "Cannot notify temperature change: Bluetooth permissions not granted")
+            return
+        }
         
         // Notify connected devices about temperature change
         bleHandler.post {

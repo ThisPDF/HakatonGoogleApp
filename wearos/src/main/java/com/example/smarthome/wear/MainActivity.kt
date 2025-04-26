@@ -15,6 +15,7 @@ import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
 import com.example.smarthome.wear.ui.connection.ConnectionScreen
 import com.example.smarthome.wear.ui.dashboard.DashboardScreen
 import com.example.smarthome.wear.ui.device.DeviceDetailScreen
+import com.example.smarthome.wear.ui.sync.SyncScreen
 import com.example.smarthome.wear.ui.theme.SmartHomeTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -70,8 +71,18 @@ fun WearApp() {
     
     SwipeDismissableNavHost(
         navController = navController,
-        startDestination = "connection"
+        startDestination = "sync"
     ) {
+        composable("sync") {
+            SyncScreen(
+                onSyncComplete = {
+                    navController.navigate("dashboard") {
+                        popUpTo("sync") { inclusive = true }
+                    }
+                }
+            )
+        }
+        
         composable("connection") {
             ConnectionScreen(
                 onConnected = {

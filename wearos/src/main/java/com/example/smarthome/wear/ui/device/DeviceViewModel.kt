@@ -1,5 +1,6 @@
 package com.example.smarthome.wear.ui.device
 
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -18,25 +19,36 @@ class DeviceViewModel @Inject constructor(
     private val deviceRepository: DeviceRepository,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
-
-    private val deviceId: String = checkNotNull(savedStateHandle["deviceId"])
+    private val TAG = "DeviceViewModel"
+    
+    // Get deviceId from SavedStateHandle safely
+    private val deviceId: String = savedStateHandle.get<String>("deviceId") ?: ""
     
     private val _uiState = MutableStateFlow(DeviceUiState())
     val uiState: StateFlow<DeviceUiState> = _uiState.asStateFlow()
 
     init {
-        loadDevice()
+        if (deviceId.isEmpty()) {
+            _uiState.update { it.copy(error = "Invalid device ID", isLoading = false) }
+        } else {
+            loadDevice()
+        }
     }
 
     private fun loadDevice() {
         viewModelScope.launch {
-            deviceRepository.devices.collect { devices ->
-                val device = devices.find { it.id == deviceId }
-                if (device != null) {
-                    _uiState.update { it.copy(device = device, isLoading = false) }
-                } else {
-                    _uiState.update { it.copy(error = "Device not found", isLoading = false) }
+            try {
+                deviceRepository.devices.collect { devices ->
+                    val device = devices.find { it.id == deviceId }
+                    if (device != null) {
+                        _uiState.update { it.copy(device = device, isLoading = false) }
+                    } else {
+                        _uiState.update { it.copy(error = "Device not found", isLoading = false) }
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error loading device: ${e.message}", e)
+                _uiState.update { it.copy(error = "Error loading device: ${e.message}", isLoading = false) }
             }
         }
     }
@@ -44,15 +56,25 @@ class DeviceViewModel @Inject constructor(
     fun toggleDevice() {
         val device = _uiState.value.device ?: return
         viewModelScope.launch {
-            deviceRepository.toggleDevice(device.id, !device.isOn)
+            try {
+                deviceRepository.toggleDevice(device.id, !device.isOn)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error toggling device: ${e.message}", e)
+                _uiState.update { it.copy(error = "Error toggling device: ${e.message}") }
+            }
         }
     }
 
     fun adjustTemperature(value: Int) {
         val device = _uiState.value.device ?: return
         viewModelScope.launch {
-            if (device.type == "THERMOSTAT") {
-                deviceRepository.setDeviceValue(device.id, value)
+            try {
+                if (device.type == "THERMOSTAT") {
+                    deviceRepository.setDeviceValue(device.id, value)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error adjusting temperature: ${e.message}", e)
+                _uiState.update { it.copy(error = "Error adjusting temperature: ${e.message}") }
             }
         }
     }

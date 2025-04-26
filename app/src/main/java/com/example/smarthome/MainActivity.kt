@@ -15,6 +15,10 @@ import com.example.smarthome.ui.devices.DevicesScreen
 import com.example.smarthome.ui.settings.SettingsScreen
 import com.example.smarthome.ui.theme.SmartHomeTheme
 import dagger.hilt.android.AndroidEntryPoint
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.DevicesOther
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -48,7 +52,7 @@ fun MainApp() {
                         icon = { 
                             when (index) {
                                 0 -> Icon(Icons.Default.Home, contentDescription = item)
-                                1 -> Icon(Icons.Default.Devices, contentDescription = item)
+                                1 -> Icon(Icons.Default.DevicesOther, contentDescription = item)
                                 else -> Icon(Icons.Default.Settings, contentDescription = item)
                             }
                         },

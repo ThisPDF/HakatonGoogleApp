@@ -8,6 +8,7 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material.*
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.smarthome.wear.data.Device
+import com.example.smarthome.wear.ui.theme.WearIcons
 
 @Composable
 fun DashboardScreen(

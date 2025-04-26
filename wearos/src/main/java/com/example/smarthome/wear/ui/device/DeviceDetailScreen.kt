@@ -13,10 +13,7 @@ fun DeviceDetailScreen(
     deviceId: String,
     viewModel: DeviceViewModel = hiltViewModel()
 ) {
-    // Load device data based on deviceId
-    LaunchedEffect(deviceId) {
-        viewModel.loadDevice(deviceId)
-    }
+    // The ViewModel now loads the device automatically using the deviceId from SavedStateHandle
     
     val uiState by viewModel.uiState.collectAsState()
     val device = uiState.device
@@ -54,10 +51,10 @@ fun DeviceDetailScreen(
                 )
             }
             "THERMOSTAT" -> {
-                val temperature = device.value?.toFloatOrNull() ?: 70f
+                val temperature = device.value?.toIntOrNull() ?: 70
                 
                 Text(
-                    text = "${temperature.toInt()}°",
+                    text = "${temperature}°",
                     style = MaterialTheme.typography.display1
                 )
                 
@@ -67,14 +64,14 @@ fun DeviceDetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
-                        onClick = { viewModel.adjustTemperature(-1f) },
+                        onClick = { viewModel.adjustTemperature(temperature - 1) },
                         modifier = Modifier.size(40.dp)
                     ) {
                         Text("-")
                     }
                     
                     Button(
-                        onClick = { viewModel.adjustTemperature(1f) },
+                        onClick = { viewModel.adjustTemperature(temperature + 1) },
                         modifier = Modifier.size(40.dp)
                     ) {
                         Text("+")

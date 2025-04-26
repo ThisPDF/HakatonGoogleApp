@@ -5,12 +5,14 @@ data class Device(
     val name: String,
     val type: String,
     val roomId: String,
-    val isOn: Boolean,
-    val value: String? = null
+    val isOn: Boolean = false,
+    val value: String? = null,
+    val quickActions: List<QuickAction> = emptyList()
 )
 
 data class QuickAction(
     val id: String,
     val name: String,
-    val type: String
+    val icon: String,
+    val command: String
 )

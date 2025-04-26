@@ -1,0 +1,2 @@
+include ':app', ':wearos'
+rootProject.name = "SmartHomeControl"

@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -135,12 +136,12 @@ class SensorDataRepository @Inject constructor(
     suspend fun stopMeasurements() {
         try {
             heartRateCallback?.let {
-                measureClient.unregisterCallback(it)
+                measureClient.unregisterMeasureCallback(it)
                 heartRateCallback = null
             }
             
             stepsCallback?.let {
-                measureClient.unregisterCallback(it)
+                measureClient.unregisterMeasureCallback(it)
                 stepsCallback = null
             }
             
@@ -158,7 +159,7 @@ class SensorDataRepository @Inject constructor(
         val result = mutableMapOf<String, Boolean>()
         
         try {
-            val capabilities = measureClient.capabilities
+            val capabilities = measureClient.getCapabilitiesAsync().await()
             
             result["heartRate"] = DataType.HEART_RATE_BPM in capabilities.supportedDataTypes
             result["steps"] = DataType.STEPS in capabilities.supportedDataTypes

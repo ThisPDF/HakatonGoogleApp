@@ -13,14 +13,17 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,6 +35,15 @@ class BluetoothService @Inject constructor(
     
     // Standard UUID for SPP (Serial Port Profile)
     private val SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    
+    // Alternative UUIDs to try if the standard one fails
+    private val ALTERNATIVE_UUIDS = listOf(
+        UUID.fromString("0000110a-0000-1000-8000-00805f9b34fb"), // Health Device Profile
+        UUID.fromString("0000110b-0000-1000-8000-00805f9b34fb"), // Health Device Profile
+        UUID.fromString("00001112-0000-1000-8000-00805f9b34fb"), // Headset Profile
+        UUID.fromString("00001115-0000-1000-8000-00805f9b34fb"), // Personal Area Networking
+        UUID.fromString("00001116-0000-1000-8000-00805f9b34fb")  // Network Access Point
+    )
     
     private val bluetoothManager: BluetoothManager? by lazy {
         try {
@@ -75,8 +87,10 @@ class BluetoothService @Inject constructor(
     
     private var consecutiveErrors = 0
     private val MAX_CONSECUTIVE_ERRORS = 5
+    private val MAX_ACCEPT_RETRIES = 3
     
     private var dataCallback: ((String) -> Unit)? = null
+    private val isServerRunning = AtomicBoolean(false)
     
     fun setDataCallback(callback: (String) -> Unit) {
         dataCallback = callback
@@ -100,6 +114,12 @@ class BluetoothService @Inject constructor(
             return
         }
         
+        // Check if server is already running
+        if (isServerRunning.getAndSet(true)) {
+            Log.d(TAG, "Server is already running")
+            return
+        }
+        
         // Cancel any existing accept job
         acceptJob?.cancel()
         
@@ -108,27 +128,54 @@ class BluetoothService @Inject constructor(
                 _connectionStatus.value = "Waiting for connection..."
                 _connectionState.value = ConnectionState.CONNECTING
                 
-                // Try to create a secure server socket
-                try {
-                    serverSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord("SmartHomeServer", SPP_UUID)
-                } catch (e: IOException) {
-                    Log.e(TAG, "Secure server socket failed, trying insecure: ${e.message}")
-                    // Fall back to insecure connection if secure fails
-                    serverSocket = bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord("SmartHomeServer", SPP_UUID)
+                var retryCount = 0
+                var serverStarted = false
+                
+                while (retryCount < MAX_ACCEPT_RETRIES && !serverStarted) {
+                    try {
+                        // Try to create a secure server socket
+                        serverSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord("SmartHomeServer", SPP_UUID)
+                        serverStarted = true
+                    } catch (e: IOException) {
+                        Log.e(TAG, "Secure server socket failed, trying insecure: ${e.message}")
+                        try {
+                            // Fall back to insecure connection if secure fails
+                            serverSocket = bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord("SmartHomeServer", SPP_UUID)
+                            serverStarted = true
+                        } catch (e2: IOException) {
+                            Log.e(TAG, "Insecure server socket also failed: ${e2.message}")
+                            retryCount++
+                            if (retryCount < MAX_ACCEPT_RETRIES) {
+                                Log.d(TAG, "Retrying server socket creation (${retryCount}/${MAX_ACCEPT_RETRIES})")
+                                delay(1000) // Wait before retrying
+                            }
+                        }
+                    }
                 }
                 
                 if (serverSocket == null) {
-                    _connectionStatus.value = "Failed to create server socket"
+                    _connectionStatus.value = "Failed to create server socket after $MAX_ACCEPT_RETRIES attempts"
                     _connectionState.value = ConnectionState.DISCONNECTED
+                    isServerRunning.set(false)
                     return@launch
                 }
                 
-                var shouldContinue = true
-                while (shouldContinue) {
+                var acceptRetryCount = 0
+                var connectionAccepted = false
+                
+                while (acceptRetryCount < MAX_ACCEPT_RETRIES && !connectionAccepted) {
                     try {
-                        socket = serverSocket?.accept()
+                        Log.d(TAG, "Waiting for connection... (attempt ${acceptRetryCount + 1}/${MAX_ACCEPT_RETRIES})")
                         
-                        if (socket != null) {
+                        // Set a timeout for the accept operation
+                        val acceptedSocket = withTimeoutOrNull(30000) { // 30 seconds timeout
+                            serverSocket?.accept()
+                        }
+                        
+                        if (acceptedSocket != null) {
+                            socket = acceptedSocket
+                            connectionAccepted = true
+                            
                             // Connection accepted
                             _connectedDeviceName.value = socket?.remoteDevice?.name ?: "Unknown Device"
                             _connectionStatus.value = "Connected to ${_connectedDeviceName.value}"
@@ -146,28 +193,75 @@ class BluetoothService @Inject constructor(
                                 _connectionState.value = ConnectionState.CONNECTED
                                 consecutiveErrors = 0
                                 startListening()
-                                shouldContinue = false
                             } else {
                                 throw IOException("Failed to get input/output streams")
+                            }
+                        } else {
+                            // Accept timed out
+                            Log.e(TAG, "Accept operation timed out")
+                            acceptRetryCount++
+                            
+                            if (acceptRetryCount < MAX_ACCEPT_RETRIES) {
+                                // Try closing and reopening the server socket
+                                serverSocket?.close()
+                                delay(1000) // Wait before retrying
+                                
+                                // Try to create a new server socket
+                                try {
+                                    serverSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord("SmartHomeServer", SPP_UUID)
+                                } catch (e: IOException) {
+                                    Log.e(TAG, "Failed to recreate server socket: ${e.message}")
+                                    try {
+                                        serverSocket = bluetoothAdapter?.listenUsingInsecureRfcommWithServiceRecord("SmartHomeServer", SPP_UUID)
+                                    } catch (e2: IOException) {
+                                        Log.e(TAG, "Failed to recreate insecure server socket: ${e2.message}")
+                                    }
+                                }
                             }
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Error accepting connection: ${e.message}")
                         _connectionStatus.value = "Connection error: ${e.message}"
-                        _connectionState.value = ConnectionState.DISCONNECTED
-                        socket?.close()
+                        
+                        acceptRetryCount++
+                        if (acceptRetryCount < MAX_ACCEPT_RETRIES) {
+                            Log.d(TAG, "Retrying accept (${acceptRetryCount}/${MAX_ACCEPT_RETRIES})")
+                            delay(2000) // Wait before retrying
+                        }
+                        
+                        try {
+                            socket?.close()
+                        } catch (closeEx: Exception) {
+                            Log.e(TAG, "Error closing socket: ${closeEx.message}")
+                        }
                         socket = null
                     }
+                }
+                
+                if (!connectionAccepted) {
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    _connectionStatus.value = "Failed to accept connection after $MAX_ACCEPT_RETRIES attempts"
+                    
+                    // Clean up resources
+                    try {
+                        serverSocket?.close()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error closing server socket: ${e.message}")
+                    }
+                    serverSocket = null
+                    
+                    // Schedule recovery
+                    scheduleServerRecovery()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Server error: ${e.message}")
                 _connectionStatus.value = "Server error: ${e.message}"
                 _connectionState.value = ConnectionState.DISCONNECTED
+                
+                // Schedule recovery
+                scheduleServerRecovery()
             } finally {
-                if (!_isConnected.value) {
-                    // Only schedule recovery if we didn't successfully connect
-                    scheduleServerRecovery()
-                }
+                isServerRunning.set(false)
             }
         }
     }
@@ -177,7 +271,7 @@ class BluetoothService @Inject constructor(
         serverRecoveryJob?.cancel()
         
         serverRecoveryJob = CoroutineScope(Dispatchers.IO).launch {
-            kotlinx.coroutines.delay(5000) // Wait 5 seconds before restarting server
+            delay(5000) // Wait 5 seconds before restarting server
             Log.d(TAG, "Attempting to restart server...")
             startServer()
         }
@@ -197,7 +291,18 @@ class BluetoothService @Inject constructor(
                         // Check if inputStream is null
                         val stream = inputStream ?: throw IOException("Input stream is null")
                         
-                        bytes = stream.read(buffer)
+                        // Set a read timeout to avoid blocking indefinitely
+                        val readResult = withTimeoutOrNull(5000) { // 5 second timeout for read
+                            try {
+                                stream.read(buffer)
+                            } catch (e: IOException) {
+                                Log.e(TAG, "Read error: ${e.message}")
+                                -1 // Return -1 on error, same as stream.read() would
+                            }
+                        }
+                        
+                        bytes = readResult ?: -1 // If timeout, treat as -1 (error)
+                        
                         if (bytes > 0) {
                             val data = String(buffer, 0, bytes)
                             Log.d(TAG, "Received: $data")
@@ -207,6 +312,18 @@ class BluetoothService @Inject constructor(
                             
                             // Reset consecutive errors on successful read
                             consecutiveErrors = 0
+                        } else if (bytes == -1) {
+                            // End of stream or error
+                            Log.e(TAG, "End of stream or read error")
+                            consecutiveErrors++
+                            
+                            if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                                Log.e(TAG, "Too many consecutive errors, disconnecting")
+                                break
+                            }
+                            
+                            // Short delay before retrying
+                            delay(1000)
                         }
                     } catch (e: IOException) {
                         Log.e(TAG, "Error reading from input stream: ${e.message}")
@@ -218,7 +335,7 @@ class BluetoothService @Inject constructor(
                         }
                         
                         // Short delay before retrying
-                        kotlinx.coroutines.delay(1000)
+                        delay(1000)
                     }
                 }
             } catch (e: Exception) {
@@ -244,6 +361,7 @@ class BluetoothService @Inject constructor(
             try {
                 val stream = outputStream ?: throw IOException("Output stream is null")
                 stream.write(data.toByteArray())
+                stream.flush() // Ensure data is sent immediately
                 Log.d(TAG, "Sent: $data")
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending data: ${e.message}")
@@ -259,10 +377,32 @@ class BluetoothService @Inject constructor(
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 listeningJob?.cancel()
-                inputStream?.close()
-                outputStream?.close()
-                socket?.close()
-                serverSocket?.close()
+                
+                // Close streams first
+                try {
+                    inputStream?.close()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error closing input stream: ${e.message}")
+                }
+                
+                try {
+                    outputStream?.close()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error closing output stream: ${e.message}")
+                }
+                
+                // Then close sockets
+                try {
+                    socket?.close()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error closing socket: ${e.message}")
+                }
+                
+                try {
+                    serverSocket?.close()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error closing server socket: ${e.message}")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error during disconnect: ${e.message}")
             } finally {
@@ -274,6 +414,7 @@ class BluetoothService @Inject constructor(
                 _connectionState.value = ConnectionState.DISCONNECTED
                 _connectedDeviceName.value = null
                 _connectionStatus.value = "Disconnected"
+                isServerRunning.set(false)
             }
         }
     }

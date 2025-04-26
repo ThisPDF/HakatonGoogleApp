@@ -12,6 +12,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,6 +20,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -61,6 +64,10 @@ class BluetoothService @Inject constructor(
     }
     
     private var socket: BluetoothSocket? = null
+    private var inputStream: InputStream? = null
+    private var outputStream: OutputStream? = null
+    private val MAX_CONNECTION_RETRIES = 3
+    private val CONNECTION_TIMEOUT = 10000L // 10 seconds
     
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -235,20 +242,42 @@ class BluetoothService @Inject constructor(
             for (device in pairedDevices) {
                 Log.d(TAG, "Attempting to connect to device: ${device.name ?: "Unknown"} (${device.address})")
                 
-                // Try the standard UUID first
-                if (tryConnectToDevice(device, SPP_UUID)) {
-                    return@withContext true
-                }
+                // Try multiple connection methods with retries
+                var retryCount = 0
+                var connected = false
                 
-                // If that fails, try alternative UUIDs
-                for (uuid in ALTERNATIVE_UUIDS) {
-                    if (tryConnectToDevice(device, uuid)) {
-                        return@withContext true
+                while (retryCount < MAX_CONNECTION_RETRIES && !connected) {
+                    // Try the standard UUID first
+                    if (tryConnectToDevice(device, SPP_UUID)) {
+                        connected = true
+                        break
+                    }
+                    
+                    // If that fails, try alternative UUIDs
+                    for (uuid in ALTERNATIVE_UUIDS) {
+                        if (tryConnectToDevice(device, uuid)) {
+                            connected = true
+                            break
+                        }
+                    }
+                    
+                    // If all UUIDs fail, try createInsecureRfcommSocketToServiceRecord
+                    if (!connected && tryInsecureConnection(device)) {
+                        connected = true
+                        break
+                    }
+                    
+                    // If still not connected, increment retry count and try again
+                    if (!connected) {
+                        retryCount++
+                        if (retryCount < MAX_CONNECTION_RETRIES) {
+                            Log.d(TAG, "Retrying connection (${retryCount}/${MAX_CONNECTION_RETRIES})")
+                            delay(2000) // Wait 2 seconds before retrying
+                        }
                     }
                 }
                 
-                // If all UUIDs fail, try createInsecureRfcommSocketToServiceRecord
-                if (tryInsecureConnection(device)) {
+                if (connected) {
                     return@withContext true
                 }
             }
@@ -276,7 +305,7 @@ class BluetoothService @Inject constructor(
             Log.d(TAG, "Trying to connect to ${device.name ?: "Unknown"} with UUID $uuid")
             
             // Create socket with timeout
-            val socket = withTimeoutOrNull(5000) {
+            val socket = withTimeoutOrNull(CONNECTION_TIMEOUT) {
                 try {
                     device.createRfcommSocketToServiceRecord(uuid)
                 } catch (e: Exception) {
@@ -286,7 +315,7 @@ class BluetoothService @Inject constructor(
             } ?: return false
             
             // Connect with timeout
-            val connected = withTimeoutOrNull(5000) {
+            val connected = withTimeoutOrNull(CONNECTION_TIMEOUT) {
                 try {
                     // Cancel discovery before connecting
                     bluetoothAdapter?.cancelDiscovery()
@@ -306,6 +335,24 @@ class BluetoothService @Inject constructor(
             
             if (connected) {
                 this.socket = socket
+                
+                // Set up input and output  {
+                this.socket = socket
+                
+                // Set up input and output streams
+                try {
+                    inputStream = socket.inputStream
+                    outputStream = socket.outputStream
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error getting streams: ${e.message}", e)
+                    try {
+                        socket.close()
+                    } catch (closeException: Exception) {
+                        Log.e(TAG, "Error closing socket: ${closeException.message}", closeException)
+                    }
+                    return false
+                }
+                
                 _connectionState.value = ConnectionState.CONNECTED
                 _error.value = null
                 
@@ -331,7 +378,7 @@ class BluetoothService @Inject constructor(
             Log.d(TAG, "Trying insecure connection to ${device.name ?: "Unknown"}")
             
             // Create insecure socket with timeout
-            val socket = withTimeoutOrNull(5000) {
+            val socket = withTimeoutOrNull(CONNECTION_TIMEOUT) {
                 try {
                     device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
                 } catch (e: Exception) {
@@ -341,7 +388,7 @@ class BluetoothService @Inject constructor(
             } ?: return false
             
             // Connect with timeout
-            val connected = withTimeoutOrNull(5000) {
+            val connected = withTimeoutOrNull(CONNECTION_TIMEOUT) {
                 try {
                     // Cancel discovery before connecting
                     bluetoothAdapter?.cancelDiscovery()
@@ -361,6 +408,21 @@ class BluetoothService @Inject constructor(
             
             if (connected) {
                 this.socket = socket
+                
+                // Set up input and output streams
+                try {
+                    inputStream = socket.inputStream
+                    outputStream = socket.outputStream
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error getting streams: ${e.message}", e)
+                    try {
+                        socket.close()
+                    } catch (closeException: Exception) {
+                        Log.e(TAG, "Error closing socket: ${closeException.message}", closeException)
+                    }
+                    return false
+                }
+                
                 _connectionState.value = ConnectionState.CONNECTED
                 _error.value = null
                 
@@ -382,8 +444,62 @@ class BluetoothService @Inject constructor(
     }
     
     private fun startListening() {
-        // In a real app, you'd start a coroutine to listen for incoming data
-        // For this example, we'll just simulate receiving data
+        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            val buffer = ByteArray(1024)
+            
+            try {
+                while (_connectionState.value == ConnectionState.CONNECTED) {
+                    try {
+                        val stream = inputStream ?: throw IOException("Input stream is null")
+                        
+                        // Read with timeout
+                        val bytesRead = withTimeoutOrNull(5000) { // 5 second timeout
+                            try {
+                                if (stream.available() > 0) {
+                                    stream.read(buffer)
+                                } else {
+                                    0 // No data available
+                                }
+                            } catch (e: IOException) {
+                                Log.e(TAG, "Error reading from stream: ${e.message}")
+                                -1 // Error
+                            }
+                        } ?: -1 // Timeout
+                        
+                        if (bytesRead > 0) {
+                            val data = String(buffer, 0, bytesRead)
+                            Log.d(TAG, "Received data: $data")
+                            
+                            // Process received data
+                            processReceivedData(data)
+                        } else if (bytesRead == -1) {
+                            // Error or end of stream
+                            Log.e(TAG, "End of stream or read error")
+                            break
+                        }
+                        
+                        // Small delay to prevent tight loop
+                        delay(100)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in listening loop: ${e.message}")
+                        delay(1000) // Wait before retrying
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Fatal error in listening thread: ${e.message}")
+            } finally {
+                // If we exit the loop, make sure we're disconnected
+                if (_connectionState.value == ConnectionState.CONNECTED) {
+                    disconnect()
+                }
+            }
+        }
+    }
+    
+    private fun processReceivedData(data: String) {
+        // In a real app, parse the JSON data and update the device list
+        // For this example, we'll just log it
+        Log.d(TAG, "Processing data: $data")
     }
     
     suspend fun requestDevices(): Boolean = withContext(Dispatchers.IO) {
@@ -398,11 +514,12 @@ class BluetoothService @Inject constructor(
         }
         
         try {
-            // In a real app, you'd send a command to the phone to request the device list
-            // For this example, we'll just use our mock data
+            // Send a command to request device list
+            val command = "{\"command\":\"getDevices\"}"
+            sendData(command)
             
             // Simulate a delay for network request
-            kotlinx.coroutines.delay(500)
+            delay(500)
             
             return@withContext true
         } catch (e: Exception) {
@@ -412,45 +529,65 @@ class BluetoothService @Inject constructor(
         }
     }
     
+    private suspend fun sendData(data: String): Boolean = withContext(Dispatchers.IO) {
+        if (_connectionState.value != ConnectionState.CONNECTED) {
+            return@withContext false
+        }
+        
+        try {
+            val stream = outputStream ?: throw IOException("Output stream is null")
+            stream.write(data.toByteArray())
+            stream.flush() // Ensure data is sent immediately
+            Log.d(TAG, "Sent: $data")
+            return@withContext true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending data: ${e.message}")
+            disconnect()
+            return@withContext false
+        }
+    }
+    
     fun disconnect() {
         try {
-            socket?.close()
-        } catch (e: IOException) {
-            Log.e(TAG, "Error closing socket: ${e.message}", e)
+            // Close streams first
+            try {
+                inputStream?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing input stream: ${e.message}")
+            }
+            
+            try {
+                outputStream?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing output stream: ${e.message}")
+            }
+            
+            // Then close socket
+            try {
+                socket?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing socket: ${e.message}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during disconnect: ${e.message}")
         } finally {
             socket = null
+            inputStream = null
+            outputStream = null
             _connectionState.value = ConnectionState.DISCONNECTED
         }
     }
     
     suspend fun sendCommand(deviceId: String, command: String): Boolean = withContext(Dispatchers.IO) {
-        if (!hasBluetoothPermissions()) {
-            _error.value = "Bluetooth permissions not granted"
-            return@withContext false
-        }
-        
         if (_connectionState.value != ConnectionState.CONNECTED) {
             _error.value = "Not connected to phone"
             return@withContext false
         }
         
         try {
-            // In a real app, you'd send the command to the phone
-            // For this example, we'll just update our mock data
-            
-            when (command) {
-                "TOGGLE" -> {
-                    toggleDevice(deviceId)
-                }
-                else -> {
-                    if (command.startsWith("VALUE:")) {
-                        val value = command.substringAfter("VALUE:")
-                        setDeviceValue(deviceId, value.toIntOrNull() ?: 0)
-                    }
-                }
-            }
-            
-            return@withContext true
+            // Format the command as JSON
+            val jsonCommand = "{\"command\":\"$command\",\"deviceId\":\"$deviceId\"}"
+            return@withContext sendData(jsonCommand)
         } catch (e: Exception) {
             Log.e(TAG, "Error sending command: ${e.message}", e)
             _error.value = "Error sending command: ${e.message}"
@@ -459,6 +596,7 @@ class BluetoothService @Inject constructor(
     }
     
     fun toggleDevice(deviceId: String) {
+        // Update local state immediately for responsive UI
         val devices = _devices.value.toMutableList()
         val deviceIndex = devices.indexOfFirst { it.id == deviceId }
         
@@ -466,10 +604,16 @@ class BluetoothService @Inject constructor(
             val device = devices[deviceIndex]
             devices[deviceIndex] = device.copy(isOn = !device.isOn)
             _devices.value = devices
+            
+            // Send command to phone
+            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                sendCommand(deviceId, "TOGGLE")
+            }
         }
     }
     
     fun setDeviceValue(deviceId: String, value: Int) {
+        // Update local state immediately for responsive UI
         val devices = _devices.value.toMutableList()
         val deviceIndex = devices.indexOfFirst { it.id == deviceId }
         
@@ -477,6 +621,11 @@ class BluetoothService @Inject constructor(
             val device = devices[deviceIndex]
             devices[deviceIndex] = device.copy(value = value.toString())
             _devices.value = devices
+            
+            // Send command to phone
+            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+                sendCommand(deviceId, "VALUE:$value")
+            }
         }
     }
     

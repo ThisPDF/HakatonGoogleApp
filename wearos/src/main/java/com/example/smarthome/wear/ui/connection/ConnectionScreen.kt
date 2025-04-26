@@ -8,7 +8,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material.*
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.example.smarthome.wear.data.bluetooth.BluetoothService
+import com.example.smarthome.wear.ui.connection.ConnectionViewModel.ConnectionState
 
 @Composable
 fun ConnectionScreen(
@@ -17,8 +17,9 @@ fun ConnectionScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     
-    LaunchedEffect(uiState.isConnected) {
-        if (uiState.isConnected) {
+    // If connected, navigate to dashboard
+    LaunchedEffect(uiState.connectionState) {
+        if (uiState.connectionState == ConnectionState.CONNECTED) {
             onConnected()
         }
     }
@@ -27,110 +28,79 @@ fun ConnectionScreen(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        when {
-            uiState.isConnecting -> {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    CircularProgressIndicator()
-                    Spacer(modifier = Modifier.height(16.dp))
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = "Smart Home",
+                style = MaterialTheme.typography.title1,
+                textAlign = TextAlign.Center
+            )
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            when {
+                !uiState.isBluetoothAvailable -> {
+                    Text(
+                        text = "Bluetooth is not available on this device",
+                        style = MaterialTheme.typography.body1,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                !uiState.isBluetoothEnabled -> {
+                    Text(
+                        text = "Please enable Bluetooth to continue",
+                        style = MaterialTheme.typography.body1,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                uiState.pairedDevices == 0 -> {
+                    Text(
+                        text = "No paired devices found. Please pair your phone in Bluetooth settings",
+                        style = MaterialTheme.typography.body1,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                uiState.isConnecting -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(32.dp),
+                        strokeWidth = 4.dp
+                    )
                     Text(
                         text = "Connecting to phone...",
+                        style = MaterialTheme.typography.body1,
                         textAlign = TextAlign.Center
                     )
-                    
-                    // Show connection attempt count if available
-                    if (uiState.connectionAttempt > 0) {
-                        Text(
-                            text = "Attempt ${uiState.connectionAttempt}",
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.body2
-                        )
-                    }
                 }
-            }
-            uiState.error != null -> {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(16.dp)
-                ) {
+                uiState.error != null -> {
                     Text(
-                        text = "Connection failed",
-                        style = MaterialTheme.typography.title3,
-                        textAlign = TextAlign.Center
+                        text = "Error: ${uiState.error}",
+                        style = MaterialTheme.typography.body1,
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colors.error
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = uiState.error ?: "Unknown error",
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.body2
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
-                    // Add troubleshooting tips
-                    Text(
-                        text = "Troubleshooting tips:",
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.body1
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "• Make sure Bluetooth is enabled on both devices\n" +
-                              "• Ensure devices are paired\n" +
-                              "• Keep devices close to each other\n" +
-                              "• Restart Bluetooth on both devices",
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.body2
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
                     Button(
                         onClick = { viewModel.connectToPhone() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Retry Connection")
+                        Text("Retry")
                     }
                 }
-            }
-            else -> {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.padding(16.dp)
-                ) {
+                else -> {
                     Text(
-                        text = "Connect to Phone",
-                        style = MaterialTheme.typography.title2,
+                        text = "Connect to your phone to control your smart home devices",
+                        style = MaterialTheme.typography.body1,
                         textAlign = TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Make sure Bluetooth is enabled on both devices and they are paired.",
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.body2
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
                     Button(
                         onClick = { viewModel.connectToPhone() },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Connect")
-                    }
-                    
-                    Spacer(modifier = Modifier.height(16.dp))
-                    
-                    // Add check Bluetooth status button
-                    Button(
-                        onClick = { viewModel.checkBluetoothStatus() },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            backgroundColor = MaterialTheme.colors.surface
-                        )
-                    ) {
-                        Text("Check Bluetooth Status")
                     }
                 }
             }

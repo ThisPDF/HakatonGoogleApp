@@ -2,6 +2,7 @@ package com.example.smarthome.wear.data.repository
 
 import android.util.Log
 import com.example.smarthome.wear.data.bluetooth.BluetoothService
+import com.example.smarthome.wear.data.models.Device
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,8 +17,19 @@ class DeviceRepository @Inject constructor(
 ) {
     private val TAG = "DeviceRepository"
     
-    // Get devices directly from BluetoothService
-    val devices: Flow<List<BluetoothService.Device>> = bluetoothService.devices
+    // Map BluetoothService.Device to our Device model
+    val devices: Flow<List<Device>> = bluetoothService.devices.map { deviceList ->
+        deviceList.map { device ->
+            Device(
+                id = device.id,
+                name = device.name,
+                type = device.type,
+                roomId = device.roomId,
+                isOn = device.isOn,
+                value = device.value
+            )
+        }
+    }
     
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -45,7 +57,6 @@ class DeviceRepository @Inject constructor(
         }
     }
 
-    // Add a method to check Bluetooth status
     data class BluetoothStatus(
         val isAvailable: Boolean,
         val isEnabled: Boolean,

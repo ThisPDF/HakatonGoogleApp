@@ -12,74 +12,87 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-data class ConnectionUiState(
-    val isConnecting: Boolean = false,
-    val isConnected: Boolean = false,
-    val error: String? = null,
-    val connectionAttempt: Int = 0,
-    val bluetoothEnabled: Boolean = false
-)
-
 @HiltViewModel
 class ConnectionViewModel @Inject constructor(
-    private val bluetoothService: BluetoothService,
-    private val deviceRepository: DeviceRepository
+    private val deviceRepository: DeviceRepository,
+    private val bluetoothService: BluetoothService
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ConnectionUiState())
     val uiState: StateFlow<ConnectionUiState> = _uiState.asStateFlow()
 
     init {
+        observeConnectionState()
+        observeBluetoothError()
+        checkBluetoothStatus()
+    }
+
+    private fun observeConnectionState() {
         viewModelScope.launch {
             bluetoothService.connectionState.collect { state ->
                 _uiState.update { 
-                    it.copy(
-                        isConnected = state == BluetoothService.ConnectionState.CONNECTED,
-                        isConnecting = state == BluetoothService.ConnectionState.CONNECTING
-                    )
+                    when (state) {
+                        BluetoothService.ConnectionState.CONNECTED -> 
+                            it.copy(connectionState = ConnectionState.CONNECTED, isConnecting = false)
+                        BluetoothService.ConnectionState.CONNECTING -> 
+                            it.copy(connectionState = ConnectionState.CONNECTING, isConnecting = true)
+                        BluetoothService.ConnectionState.DISCONNECTED -> 
+                            it.copy(connectionState = ConnectionState.DISCONNECTED, isConnecting = false)
+                    }
                 }
             }
         }
-        
+    }
+
+    private fun observeBluetoothError() {
         viewModelScope.launch {
-            bluetoothService.error.collect { errorMsg ->
-                if (errorMsg != null) {
-                    _uiState.update { it.copy(error = errorMsg) }
+            bluetoothService.error.collect { error ->
+                if (error != null) {
+                    _uiState.update { it.copy(error = error) }
+                } else {
+                    _uiState.update { it.copy(error = null) }
                 }
             }
         }
     }
 
     fun checkBluetoothStatus() {
-        viewModelScope.launch {
-            try {
-                val status = bluetoothService.checkBluetoothStatus()
-                _uiState.update {
-                    it.copy(
-                        bluetoothEnabled = status.isEnabled,
-                        error = if (!status.isEnabled) "Bluetooth is not enabled" else null
-                    )
-                }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(error = "Error checking Bluetooth: ${e.message}") }
-            }
+        val status = bluetoothService.checkBluetoothStatus()
+        _uiState.update { 
+            it.copy(
+                isBluetoothAvailable = status.isAvailable,
+                isBluetoothEnabled = status.isEnabled,
+                pairedDevices = status.pairedDevices
+            )
         }
     }
 
     fun connectToPhone() {
+        if (_uiState.value.isConnecting) return
+        
+        _uiState.update { it.copy(isConnecting = true, error = null) }
         viewModelScope.launch {
-            _uiState.update { it.copy(isConnecting = true, error = null, connectionAttempt = it.connectionAttempt + 1) }
-
-            try {
-                val success = bluetoothService.connectToPhone()
-                if (!success) {
-                    _uiState.update { it.copy(error = "Failed to connect to phone") }
-                }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(error = e.message) }
-            } finally {
+            val success = deviceRepository.connectToPhone()
+            if (!success) {
                 _uiState.update { it.copy(isConnecting = false) }
             }
         }
+    }
+
+    fun disconnect() {
+        bluetoothService.disconnect()
+    }
+
+    data class ConnectionUiState(
+        val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
+        val isConnecting: Boolean = false,
+        val isBluetoothAvailable: Boolean = false,
+        val isBluetoothEnabled: Boolean = false,
+        val pairedDevices: Int = 0,
+        val error: String? = null
+    )
+
+    enum class ConnectionState {
+        CONNECTED, CONNECTING, DISCONNECTED
     }
 }

@@ -1,4 +1,4 @@
-package com.example.smarthome.wear.data
+package com.example.smarthome.wear.data.models
 
 data class Device(
     val id: String,

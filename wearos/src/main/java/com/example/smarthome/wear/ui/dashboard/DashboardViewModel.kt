@@ -2,87 +2,88 @@ package com.example.smarthome.wear.ui.dashboard
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.smarthome.wear.data.bluetooth.BluetoothService
+import com.example.smarthome.wear.data.models.Device
+import com.example.smarthome.wear.data.models.QuickAction
 import com.example.smarthome.wear.data.repository.DeviceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-data class DashboardUiState(
-    val devices: List<BluetoothService.Device> = emptyList(),
-    val quickActions: List<QuickAction> = emptyList(),
-    val isLoading: Boolean = false,
-    val error: String? = null
-)
-
-data class QuickAction(
-    val id: String,
-    val name: String,
-    val type: String
-)
-
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
-    private val bluetoothService: BluetoothService
+    private val deviceRepository: DeviceRepository
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(DashboardUiState(isLoading = true))
+    private val _uiState = MutableStateFlow(DashboardUiState())
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
 
     init {
-        loadData()
-        
+        loadDevices()
+        loadQuickActions()
+    }
+
+    private fun loadDevices() {
         viewModelScope.launch {
-            bluetoothService.devices.collect { devices ->
-                _uiState.value = _uiState.value.copy(
-                    devices = devices,
-                    isLoading = false
-                )
+            deviceRepository.devices.collect { devices ->
+                _uiState.update { it.copy(devices = devices) }
             }
         }
     }
 
-    private fun loadData() {
-        viewModelScope.launch {
-            try {
-                val quickActions = listOf(
-                    QuickAction("all_lights", "All Lights", "LIGHT"),
-                    QuickAction("all_locks", "All Locks", "LOCK")
-                )
-                _uiState.value = _uiState.value.copy(
-                    quickActions = quickActions,
-                    isLoading = false
-                )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    error = e.message,
-                    isLoading = false
-                )
-            }
-        }
+    private fun loadQuickActions() {
+        // In a real app, these would come from a repository
+        val quickActions = listOf(
+            QuickAction("qa1", "All Lights", "LIGHT"),
+            QuickAction("qa2", "Lock Home", "LOCK"),
+            QuickAction("qa3", "Night Mode", "SCENE")
+        )
+        _uiState.update { it.copy(quickActions = quickActions) }
     }
 
     fun executeQuickAction(actionId: String) {
         viewModelScope.launch {
             when (actionId) {
-                "all_lights" -> {
+                "qa1" -> {
                     // Toggle all lights
-                    _uiState.value.devices
+                    uiState.value.devices
                         .filter { it.type == "LIGHT" }
-                        .forEach { bluetoothService.sendCommand(it.id, if (it.isOn) "OFF" else "ON") }
+                        .forEach { device ->
+                            deviceRepository.toggleDevice(device.id, !device.isOn)
+                        }
                 }
-                "all_locks" -> {
-                    // Toggle all locks
-                    _uiState.value.devices
+                "qa2" -> {
+                    // Lock all doors
+                    uiState.value.devices
                         .filter { it.type == "LOCK" }
-                        .forEach { bluetoothService.sendCommand(it.id, if (it.isOn) "OFF" else "ON") }
+                        .forEach { device ->
+                            deviceRepository.toggleDevice(device.id, true)
+                        }
+                }
+                "qa3" -> {
+                    // Night mode - turn off lights, lock doors
+                    uiState.value.devices
+                        .filter { it.type == "LIGHT" }
+                        .forEach { device ->
+                            deviceRepository.toggleDevice(device.id, false)
+                        }
+                    uiState.value.devices
+                        .filter { it.type == "LOCK" }
+                        .forEach { device ->
+                            deviceRepository.toggleDevice(device.id, true)
+                        }
                 }
             }
-            // Reload data to reflect changes
-            bluetoothService.requestDevices()
         }
     }
+
+    data class DashboardUiState(
+        val devices: List<Device> = emptyList(),
+        val quickActions: List<QuickAction> = emptyList(),
+        val isLoading: Boolean = false,
+        val error: String? = null
+    )
 }

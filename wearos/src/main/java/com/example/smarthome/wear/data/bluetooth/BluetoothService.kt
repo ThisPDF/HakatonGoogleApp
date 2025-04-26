@@ -7,8 +7,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.util.Log
-import com.example.smarthome.wear.data.Device
-import com.example.smarthome.wear.data.repository.DeviceRepository
+import com.example.smarthome.wear.data.models.Device
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -60,15 +59,6 @@ class BluetoothService @Inject constructor(
         CONNECTED, CONNECTING, DISCONNECTED
     }
     
-    data class Device(
-        val id: String,
-        val name: String,
-        val type: String,
-        val roomId: String,
-        val isOn: Boolean,
-        val value: String? = null
-    )
-    
     @SuppressLint("MissingPermission")
     suspend fun connectToPhone(): Boolean {
         if (bluetoothAdapter == null) {
@@ -77,7 +67,9 @@ class BluetoothService @Inject constructor(
             return false
         }
         
-        if (!bluetoothAdapter.isEnabled) {
+        val adapter = bluetoothAdapter ?: return false
+        
+        if (!adapter.isEnabled) {
             _error.value = "Bluetooth is not enabled"
             Log.e(TAG, "Bluetooth is not enabled")
             return false
@@ -89,7 +81,7 @@ class BluetoothService @Inject constructor(
                 _error.value = null
                 
                 // Find the phone from paired devices
-                val pairedDevices = bluetoothAdapter.bondedDevices
+                val pairedDevices = adapter.bondedDevices
                 
                 if (pairedDevices.isEmpty()) {
                     _error.value = "No paired devices found"
@@ -288,6 +280,18 @@ class BluetoothService @Inject constructor(
         }
     }
     
+    fun toggleDevice(deviceId: String, isOn: Boolean) {
+        CoroutineScope(Dispatchers.IO).launch {
+            sendCommand(deviceId, if (isOn) "ON" else "OFF")
+        }
+    }
+    
+    fun setDeviceValue(deviceId: String, value: Int) {
+        CoroutineScope(Dispatchers.IO).launch {
+            sendCommand(deviceId, "VALUE:$value")
+        }
+    }
+    
     private fun startListening() {
         CoroutineScope(Dispatchers.IO).launch {
             val buffer = ByteArray(1024)
@@ -297,12 +301,13 @@ class BluetoothService @Inject constructor(
             
             while (_connectionState.value == ConnectionState.CONNECTED) {
                 try {
-                    if (inputStream == null) {
+                    val stream = inputStream
+                    if (stream == null) {
                         Log.e(TAG, "Input stream is null, stopping listener")
                         break
                     }
                     
-                    bytes = inputStream?.read(buffer) ?: -1
+                    bytes = stream.read(buffer)
                     
                     if (bytes > 0) {
                         val message = String(buffer, 0, bytes)
@@ -403,11 +408,11 @@ class BluetoothService @Inject constructor(
         }
     }
     
+    @SuppressLint("MissingPermission")
     fun checkBluetoothStatus(): BluetoothStatus {
         val isAvailable = bluetoothAdapter != null
         val isEnabled = bluetoothAdapter?.isEnabled == true
-        val pairedDevices = if (isEnabled) {
-            @SuppressLint("MissingPermission")
+        val pairedDevices = if (isEnabled && bluetoothAdapter != null) {
             bluetoothAdapter?.bondedDevices?.size ?: 0
         } else {
             0

@@ -7,7 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material.*
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.example.smarthome.wear.data.Device
+import com.example.smarthome.wear.data.models.Device
 import com.example.smarthome.wear.ui.theme.IconFromDrawable
 import com.example.smarthome.wear.ui.theme.WearIcons
 

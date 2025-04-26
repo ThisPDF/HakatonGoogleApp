@@ -4,9 +4,12 @@ import android.util.Log
 import com.example.smarthome.data.Device
 import com.example.smarthome.data.DeviceType
 import com.example.smarthome.data.bluetooth.BluetoothService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,6 +20,9 @@ class DeviceRepository @Inject constructor(
     private val TAG = "DeviceRepository"
     private val _devices = MutableStateFlow<List<Device>>(emptyList())
     val devices: Flow<List<Device>> = _devices.asStateFlow()
+    
+    // Create a coroutine scope for repository operations
+    private val repositoryScope = CoroutineScope(Dispatchers.Main)
 
     init {
         // Initialize with mock data
@@ -35,7 +41,7 @@ class DeviceRepository @Inject constructor(
     private fun listenForDeviceRequests() {
         // This would be implemented with a callback from the BluetoothService
         // For now, we'll just sync devices whenever the connection state changes
-        kotlinx.coroutines.MainScope().launch {
+        repositoryScope.launch {
             bluetoothService.connectionState.collect { state ->
                 if (state == BluetoothService.ConnectionState.CONNECTED) {
                     // Automatically sync devices when connected
@@ -101,7 +107,7 @@ class DeviceRepository @Inject constructor(
         _devices.value = currentDevices
         
         // Sync with watch
-        kotlinx.coroutines.MainScope().launch {
+        repositoryScope.launch {
             syncDevicesWithWatch()
         }
     }
@@ -112,7 +118,7 @@ class DeviceRepository @Inject constructor(
         _devices.value = currentDevices
         
         // Sync with watch
-        kotlinx.coroutines.MainScope().launch {
+        repositoryScope.launch {
             syncDevicesWithWatch()
         }
     }

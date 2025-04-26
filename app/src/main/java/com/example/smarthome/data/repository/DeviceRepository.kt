@@ -63,7 +63,7 @@ class DeviceRepository @Inject constructor(
             
             // Sync with watch if connected
             try {
-                bluetoothService.sendCommand(deviceId, "TOGGLE")
+                bluetoothService.sendData("{\"command\":\"toggle\",\"deviceId\":\"$deviceId\"}")
             } catch (e: Exception) {
                 // Log error but don't fail the toggle operation
                 Log.e(TAG, "Failed to sync toggle: ${e.message}")
@@ -83,7 +83,7 @@ class DeviceRepository @Inject constructor(
             
             // Sync with watch if connected
             try {
-                bluetoothService.sendCommand(deviceId, "VALUE:$value")
+                bluetoothService.sendData("{\"command\":\"setValue\",\"deviceId\":\"$deviceId\",\"value\":\"$value\"}")
             } catch (e: Exception) {
                 // Log error but don't fail the update operation
                 Log.e(TAG, "Failed to sync value update: ${e.message}")
@@ -95,6 +95,7 @@ class DeviceRepository @Inject constructor(
         return try {
             Log.d(TAG, "Syncing devices with watch")
             bluetoothService.sendDevices(_devices.value)
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to sync devices: ${e.message}")
             false

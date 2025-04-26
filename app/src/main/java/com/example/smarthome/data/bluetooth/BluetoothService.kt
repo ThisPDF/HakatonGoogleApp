@@ -7,13 +7,12 @@ import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.util.Log
-import com.example.smarthome.data.models.Device
+import com.example.smarthome.data.Device
 import com.google.gson.Gson
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,12 +33,22 @@ class BluetoothService @Inject constructor(
     // Standard UUID for SPP (Serial Port Profile)
     private val SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
     
-    private val bluetoothManager: BluetoothManager by lazy {
-        context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+    private val bluetoothManager: BluetoothManager? by lazy {
+        try {
+            context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting BluetoothManager: ${e.message}", e)
+            null
+        }
     }
     
     private val bluetoothAdapter: BluetoothAdapter? by lazy {
-        bluetoothManager.adapter
+        try {
+            bluetoothManager?.adapter
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting BluetoothAdapter: ${e.message}", e)
+            null
+        }
     }
     
     private var serverSocket: BluetoothServerSocket? = null
@@ -49,6 +58,9 @@ class BluetoothService @Inject constructor(
     private var acceptJob: Job? = null
     private var listeningJob: Job? = null
     private var serverRecoveryJob: Job? = null
+    
+    private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
     
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
@@ -88,15 +100,13 @@ class BluetoothService @Inject constructor(
             return
         }
         
-        // Check if any device is already connected at system level
-        checkForExistingConnections()
-        
         // Cancel any existing accept job
         acceptJob?.cancel()
         
         acceptJob = CoroutineScope(Dispatchers.IO).launch {
             try {
                 _connectionStatus.value = "Waiting for connection..."
+                _connectionState.value = ConnectionState.CONNECTING
                 
                 // Try to create a secure server socket
                 try {
@@ -109,6 +119,7 @@ class BluetoothService @Inject constructor(
                 
                 if (serverSocket == null) {
                     _connectionStatus.value = "Failed to create server socket"
+                    _connectionState.value = ConnectionState.DISCONNECTED
                     return@launch
                 }
                 
@@ -132,6 +143,7 @@ class BluetoothService @Inject constructor(
                             
                             if (inputStream != null && outputStream != null) {
                                 _isConnected.value = true
+                                _connectionState.value = ConnectionState.CONNECTED
                                 consecutiveErrors = 0
                                 startListening()
                                 shouldContinue = false
@@ -142,6 +154,7 @@ class BluetoothService @Inject constructor(
                     } catch (e: Exception) {
                         Log.e(TAG, "Error accepting connection: ${e.message}")
                         _connectionStatus.value = "Connection error: ${e.message}"
+                        _connectionState.value = ConnectionState.DISCONNECTED
                         socket?.close()
                         socket = null
                     }
@@ -149,6 +162,7 @@ class BluetoothService @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Server error: ${e.message}")
                 _connectionStatus.value = "Server error: ${e.message}"
+                _connectionState.value = ConnectionState.DISCONNECTED
             } finally {
                 if (!_isConnected.value) {
                     // Only schedule recovery if we didn't successfully connect
@@ -158,64 +172,12 @@ class BluetoothService @Inject constructor(
         }
     }
     
-    @SuppressLint("MissingPermission")
-    private fun checkForExistingConnections() {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                val connectedDevices = bluetoothAdapter?.bondedDevices?.filter { device ->
-                    try {
-                        val method = device.javaClass.getMethod("isConnected")
-                        method.invoke(device) as Boolean
-                    } catch (e: Exception) {
-                        false
-                    }
-                } ?: emptyList()
-                
-                if (connectedDevices.isNotEmpty()) {
-                    Log.d(TAG, "Found ${connectedDevices.size} already connected devices")
-                    
-                    // Try to use the first connected device
-                    val device = connectedDevices.first()
-                    Log.d(TAG, "Using existing connection to ${device.name}")
-                    
-                    // Try to establish communication with the already connected device
-                    try {
-                        // Use reflection to get the existing connection
-                        val socketField = device.javaClass.getDeclaredField("mSocket")
-                        socketField.isAccessible = true
-                        socket = socketField.get(device) as? BluetoothSocket
-                        
-                        if (socket != null && socket?.isConnected == true) {
-                            _connectedDeviceName.value = device.name
-                            _connectionStatus.value = "Using existing connection to ${device.name}"
-                            
-                            // Set up communication
-                            inputStream = socket?.inputStream
-                            outputStream = socket?.outputStream
-                            
-                            if (inputStream != null && outputStream != null) {
-                                _isConnected.value = true
-                                consecutiveErrors = 0
-                                startListening()
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to use existing connection: ${e.message}")
-                        // Continue with normal server startup
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error checking for existing connections: ${e.message}")
-            }
-        }
-    }
-    
     private fun scheduleServerRecovery() {
         // Cancel any existing recovery job
         serverRecoveryJob?.cancel()
         
         serverRecoveryJob = CoroutineScope(Dispatchers.IO).launch {
-            delay(5000) // Wait 5 seconds before restarting server
+            kotlinx.coroutines.delay(5000) // Wait 5 seconds before restarting server
             Log.d(TAG, "Attempting to restart server...")
             startServer()
         }
@@ -256,7 +218,7 @@ class BluetoothService @Inject constructor(
                         }
                         
                         // Short delay before retrying
-                        delay(1000)
+                        kotlinx.coroutines.delay(1000)
                     }
                 }
             } catch (e: Exception) {
@@ -267,7 +229,7 @@ class BluetoothService @Inject constructor(
         }
     }
     
-    fun sendDeviceList(devices: List<Device>) {
+    fun sendDevices(devices: List<Device>) {
         val message = "{\"devices\": ${gson.toJson(devices)}}"
         sendData(message)
     }
@@ -309,6 +271,7 @@ class BluetoothService @Inject constructor(
                 inputStream = null
                 outputStream = null
                 _isConnected.value = false
+                _connectionState.value = ConnectionState.DISCONNECTED
                 _connectedDeviceName.value = null
                 _connectionStatus.value = "Disconnected"
             }
@@ -319,5 +282,9 @@ class BluetoothService @Inject constructor(
         acceptJob?.cancel()
         serverRecoveryJob?.cancel()
         disconnect()
+    }
+    
+    enum class ConnectionState {
+        CONNECTED, CONNECTING, DISCONNECTED
     }
 }

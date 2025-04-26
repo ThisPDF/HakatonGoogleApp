@@ -37,7 +37,7 @@ android {
         compose true
     }
     composeOptions {
-        kotlinCompilerExtensionVersion compose_compiler_version
+        kotlinCompilerExtensionVersion rootProject.ext.compose_compiler_version
     }
     packaging {
         resources {
@@ -59,8 +59,8 @@ dependencies {
     implementation 'androidx.compose.material:material-icons-extended'
     
     // Hilt for dependency injection
-    implementation "com.google.dagger:hilt-android:$hilt_version"
-    kapt "com.google.dagger:hilt-android-compiler:$hilt_version"
+    implementation "com.google.dagger:hilt-android:$rootProject.ext.hilt_version"
+    kapt "com.google.dagger:hilt-android-compiler:$rootProject.ext.hilt_version"
     implementation 'androidx.hilt:hilt-navigation-compose:1.1.0'
     
     // Gson for JSON serialization

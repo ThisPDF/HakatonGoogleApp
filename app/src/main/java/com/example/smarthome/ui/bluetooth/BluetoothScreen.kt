@@ -79,7 +79,13 @@ fun BluetoothScreen(
             TopAppBar(
                 title = { Text("Bluetooth Connection") },
                 actions = {
-                    IconButton(onClick = { viewModel.refreshPairedDevices() }) {
+                    IconButton(onClick = { 
+                        if (permissionsGranted) {
+                            viewModel.refreshPairedDevices()
+                        } else {
+                            permissionLauncher.launch(bluetoothPermissions)
+                        }
+                    }) {
                         Icon(Icons.Default.Bluetooth, contentDescription = "Refresh")
                     }
                 }
@@ -104,7 +110,7 @@ fun BluetoothScreen(
                 )
                 
                 Text(
-                    text = "Paired Devices",
+                    text = "Bluetooth Server Mode",
                     style = MaterialTheme.typography.titleMedium
                 )
                 
@@ -112,25 +118,38 @@ fun BluetoothScreen(
                     ErrorCard(error = uiState.error!!)
                 }
                 
-                if (uiState.pairedDevices.isEmpty()) {
-                    Box(
+                Card(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 32.dp),
-                        contentAlignment = Alignment.Center
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        Text("No paired devices found")
-                    }
-                } else {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(uiState.pairedDevices) { device ->
-                            DeviceItem(
-                                device = device,
-                                isConnected = uiState.connectedDevice?.address == device.address,
-                                onConnect = { viewModel.connectToDevice(device) }
-                            )
+                        Text(
+                            text = "This app acts as a Bluetooth server.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Text(
+                            text = "To connect your WearOS device:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        
+                        Text(
+                            text = "1. Make sure your WearOS device is paired with this phone\n" +
+                                  "2. Open the Smart Home app on your WearOS device\n" +
+                                  "3. Tap 'Connect' on your WearOS device",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        
+                        Button(
+                            onClick = { viewModel.refreshPairedDevices() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Start Bluetooth Server")
                         }
                     }
                 }

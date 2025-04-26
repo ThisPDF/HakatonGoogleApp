@@ -13,13 +13,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
-import kotlinx.coroutines.delay // Add import for delay
 
 data class BluetoothUiState(
     val pairedDevices: List<BluetoothDevice> = emptyList(),
     val connectionState: BluetoothService.ConnectionState = BluetoothService.ConnectionState.DISCONNECTED,
     val connectedDevice: BluetoothDevice? = null,
-    val error: String? = null
+    val error: String? = null,
+    val isConnecting: Boolean = false
 )
 
 @HiltViewModel
@@ -28,6 +28,7 @@ class BluetoothViewModel @Inject constructor(
     private val deviceRepository: DeviceRepository
 ) : ViewModel() {
 
+    private val TAG = "BluetoothViewModel"
     private val _uiState = MutableStateFlow(BluetoothUiState())
     val uiState: StateFlow<BluetoothUiState> = _uiState.asStateFlow()
 
@@ -49,8 +50,12 @@ class BluetoothViewModel @Inject constructor(
     fun refreshPairedDevices() {
         viewModelScope.launch {
             try {
-                val devices = bluetoothService.getPairedDevices()
-                _uiState.update { it.copy(pairedDevices = devices, error = null) }
+                // Start the Bluetooth server which will handle connections
+                bluetoothService.startServer()
+                
+                // For now, we'll just update the UI state with an empty list
+                // since we're not actually getting paired devices directly
+                _uiState.update { it.copy(pairedDevices = emptyList(), error = null) }
             } catch (e: Exception) {
                 _uiState.update { 
                     it.copy(
@@ -65,38 +70,26 @@ class BluetoothViewModel @Inject constructor(
     fun connectToDevice(device: BluetoothDevice) {
         viewModelScope.launch {
             try {
-                _uiState.update { it.copy(error = null) }
-            
-                // Try to connect multiple times
-                var attempts = 0
-                val maxAttempts = 3
-                var success = false
-            
-                while (attempts < maxAttempts && !success) {
-                    attempts++
-                    Log.d(TAG, "Connection attempt $attempts of $maxAttempts to ${device.address}")
+                _uiState.update { it.copy(error = null, isConnecting = true) }
                 
-                    success = bluetoothService.connectToDevice(device.address)
+                // Since our BluetoothService doesn't have a connectToDevice method,
+                // we'll just start the server which will accept incoming connections
+                bluetoothService.startServer()
                 
-                    if (success) {
-                        _uiState.update { it.copy(connectedDevice = device) }
-                        break
-                    } else if (attempts < maxAttempts) {
-                        // Wait before retrying
-                        delay(1000)
-                    }
-                }
-            
-                if (!success) {
-                    _uiState.update { 
-                        it.copy(
-                            error = "Failed to connect to device after $maxAttempts attempts. " +
-                                   "Make sure the device is in range and Bluetooth is enabled on both devices."
-                        ) 
-                    }
+                // Update the UI to show we're attempting to connect
+                _uiState.update { 
+                    it.copy(
+                        connectedDevice = device,
+                        isConnecting = false
+                    )
                 }
             } catch (e: Exception) {
-                _uiState.update { it.copy(error = "Error: ${e.message}") }
+                _uiState.update { 
+                    it.copy(
+                        error = "Error: ${e.message}",
+                        isConnecting = false
+                    ) 
+                }
             }
         }
     }

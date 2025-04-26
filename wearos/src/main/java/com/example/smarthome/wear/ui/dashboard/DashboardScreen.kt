@@ -8,6 +8,7 @@ import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material.*
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.smarthome.wear.data.Device
+import com.example.smarthome.wear.ui.theme.IconFromDrawable
 import com.example.smarthome.wear.ui.theme.WearIcons
 
 @Composable
@@ -35,9 +36,9 @@ fun DashboardScreen(
                 label = { Text(action.name) },
                 icon = {
                     when (action.type) {
-                        "LIGHT" -> Icon(WearIcons.Light, contentDescription = null)
-                        "LOCK" -> Icon(WearIcons.Lock, contentDescription = null)
-                        else -> Icon(WearIcons.Device, contentDescription = null)
+                        "LIGHT" -> IconFromDrawable(WearIcons.Light, contentDescription = null)
+                        "LOCK" -> IconFromDrawable(WearIcons.Lock, contentDescription = null)
+                        else -> IconFromDrawable(WearIcons.Device, contentDescription = null)
                     }
                 }
             )
@@ -71,10 +72,10 @@ fun DeviceChip(
         secondaryLabel = { Text(if (device.isOn) "On" else "Off") },
         icon = {
             when (device.type) {
-                "LIGHT" -> Icon(WearIcons.Light, contentDescription = null)
-                "THERMOSTAT" -> Icon(WearIcons.Thermostat, contentDescription = null)
-                "LOCK" -> Icon(WearIcons.Lock, contentDescription = null)
-                else -> Icon(WearIcons.Device, contentDescription = null)
+                "LIGHT" -> IconFromDrawable(WearIcons.Light, contentDescription = null)
+                "THERMOSTAT" -> IconFromDrawable(WearIcons.Thermostat, contentDescription = null)
+                "LOCK" -> IconFromDrawable(WearIcons.Lock, contentDescription = null)
+                else -> IconFromDrawable(WearIcons.Device, contentDescription = null)
             }
         }
     )

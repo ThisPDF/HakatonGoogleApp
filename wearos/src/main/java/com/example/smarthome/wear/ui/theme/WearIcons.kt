@@ -1,14 +1,13 @@
 package com.example.smarthome.wear.ui.theme
 
+import androidx.annotation.DrawableRes
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.wear.compose.material.Icon
 import androidx.wear.compose.material.LocalContentAlpha
 import androidx.wear.compose.material.LocalContentColor
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.res.painterResource
 import com.example.smarthome.wear.R
 
 object WearIcons {
@@ -19,8 +18,8 @@ object WearIcons {
 }
 
 @Composable
-fun Icon(
-    drawableId: Int,
+fun IconFromDrawable(
+    @DrawableRes drawableId: Int,
     contentDescription: String?,
     modifier: Modifier = Modifier,
     tint: Color = LocalContentColor.current.copy(alpha = LocalContentAlpha.current)

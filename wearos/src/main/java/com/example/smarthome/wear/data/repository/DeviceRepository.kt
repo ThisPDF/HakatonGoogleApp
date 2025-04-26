@@ -73,7 +73,8 @@ class DeviceRepository @Inject constructor(
     data class BluetoothStatus(
         val isAvailable: Boolean,
         val isEnabled: Boolean,
-        val pairedDevices: Int
+        val pairedDevices: Int,
+        val connectedDevices: Int = 0
     )
 
     suspend fun checkBluetoothStatus(): BluetoothStatus {

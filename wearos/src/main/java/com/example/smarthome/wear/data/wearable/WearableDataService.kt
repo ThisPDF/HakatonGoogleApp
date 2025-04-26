@@ -75,10 +75,6 @@ class WearableDataService @Inject constructor(
         // Commands
         const val COMMAND_START_SENSORS = "start_sensors"
         const val COMMAND_STOP_SENSORS = "stop_sensors"
-        const val HEART_RATE_KEY = "heart_rate"
-        const val STEPS_KEY = "steps"
-        const val LATITUDE_KEY = "latitude"
-        const val LONGITUDE_KEY = "longitude"
     }
     
     init {
@@ -275,7 +271,7 @@ class WearableDataService @Inject constructor(
     private fun processCommand(dataItem: DataItem) {
         try {
             val dataMap = DataMapItem.fromDataItem(dataItem).dataMap
-            val command = dataMap?.getString(KEY_COMMAND)
+            val command = dataMap.getString(KEY_COMMAND)
             
             if (command != null) {
                 Log.d(TAG, "Received command: $command")
@@ -360,11 +356,7 @@ class WearableDataService @Inject constructor(
     fun cleanup() {
         dataClient.removeListener(this)
         messageClient.removeListener(this)
-    }
-    
-    fun cleanup() {
-        dataClient.removeListener(this)
-        messageClient.removeListener(this)
+        capabilityClient.removeListener(this)
     }
     
     enum class ConnectionState {

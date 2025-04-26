@@ -5,12 +5,11 @@ import android.util.Log
 import androidx.health.services.client.HealthServices
 import androidx.health.services.client.MeasureCallback
 import androidx.health.services.client.data.Availability
-import androidx.health.services.client.data.DataPoint
 import androidx.health.services.client.data.DataPointContainer
 import androidx.health.services.client.data.DataType
 import androidx.health.services.client.data.DataTypeAvailability
 import androidx.health.services.client.data.DeltaDataType
-import androidx.health.services.client.data.MeasureRequest
+import androidx.health.services.client.data.SampleDataPoint
 import com.example.smarthome.wear.data.wearable.WearableDataService
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -20,7 +19,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,11 +33,11 @@ class SensorDataRepository @Inject constructor(
     private val healthClient = HealthServices.getClient(context)
     private val measureClient = healthClient.measureClient
     
-    private val _heartRate = MutableStateFlow(0.0)
-    val heartRate: StateFlow<Double> = _heartRate.asStateFlow()
+    private val _heartRate = MutableStateFlow(0f)
+    val heartRate: StateFlow<Float> = _heartRate.asStateFlow()
     
-    private val _steps = MutableStateFlow(0L)
-    val steps: StateFlow<Long> = _steps.asStateFlow()
+    private val _steps = MutableStateFlow(0)
+    val steps: StateFlow<Int> = _steps.asStateFlow()
     
     private val _isMeasuring = MutableStateFlow(false)
     val isMeasuring: StateFlow<Boolean> = _isMeasuring.asStateFlow()
@@ -62,29 +60,23 @@ class SensorDataRepository @Inject constructor(
                     Log.d(TAG, "Heart rate availability changed: $availability")
                 }
                 
-                override fun onMeasure(dataPoints: List<DataPoint>) {
-                    dataPoints.forEach { dataPoint ->
-                        if (dataPoint.dataType == DataType.HEART_RATE_BPM) {
-                            val heartRateBpm = dataPoint.value.asDouble()
-                            _heartRate.value = heartRateBpm
-                            
-                            // Send heart rate data to phone
-                            scope.launch {
-                                wearableDataService.sendSensorData(heartRateBpm.toFloat(), _steps.value.toInt())
-                            }
-                            
-                            Log.d(TAG, "Heart rate: $heartRateBpm BPM")
+                override fun onDataReceived(dataPoints: DataPointContainer) {
+                    dataPoints.getData(DataType.HEART_RATE_BPM).firstOrNull()?.let { dataPoint ->
+                        val heartRateBpm = (dataPoint as SampleDataPoint<Float>).value
+                        _heartRate.value = heartRateBpm
+                        
+                        // Send heart rate data to phone
+                        scope.launch {
+                            wearableDataService.sendSensorData(heartRateBpm, _steps.value)
                         }
+                        
+                        Log.d(TAG, "Heart rate: $heartRateBpm BPM")
                     }
                 }
             }
             
-            val request = MeasureRequest.Builder()
-                .addDataType(DataType.HEART_RATE_BPM)
-                .build()
-                
             measureClient.registerMeasureCallback(
-                request,
+                DataType.HEART_RATE_BPM,
                 heartRateCallback!!
             )
             
@@ -110,29 +102,23 @@ class SensorDataRepository @Inject constructor(
                     Log.d(TAG, "Steps availability changed: $availability")
                 }
                 
-                override fun onMeasure(dataPoints: List<DataPoint>) {
-                    dataPoints.forEach { dataPoint ->
-                        if (dataPoint.dataType == DataType.STEPS) {
-                            val stepsCount = dataPoint.value.asLong()
-                            _steps.value = stepsCount
-                            
-                            // Send steps data to phone
-                            scope.launch {
-                                wearableDataService.sendSensorData(_heartRate.value.toFloat(), stepsCount.toInt())
-                            }
-                            
-                            Log.d(TAG, "Steps: $stepsCount")
+                override fun onDataReceived(dataPoints: DataPointContainer) {
+                    dataPoints.getData(DataType.STEPS).firstOrNull()?.let { dataPoint ->
+                        val stepsCount = (dataPoint as SampleDataPoint<Int>).value
+                        _steps.value = stepsCount
+                        
+                        // Send steps data to phone
+                        scope.launch {
+                            wearableDataService.sendSensorData(_heartRate.value, stepsCount)
                         }
+                        
+                        Log.d(TAG, "Steps: $stepsCount")
                     }
                 }
             }
             
-            val request = MeasureRequest.Builder()
-                .addDataType(DataType.STEPS)
-                .build()
-                
             measureClient.registerMeasureCallback(
-                request,
+                DataType.STEPS,
                 stepsCallback!!
             )
             
@@ -149,12 +135,12 @@ class SensorDataRepository @Inject constructor(
     suspend fun stopMeasurements() {
         try {
             heartRateCallback?.let {
-                measureClient.unregisterMeasureCallback(it)
+                measureClient.unregisterCallback(it)
                 heartRateCallback = null
             }
             
             stepsCallback?.let {
-                measureClient.unregisterMeasureCallback(it)
+                measureClient.unregisterCallback(it)
                 stepsCallback = null
             }
             
@@ -172,7 +158,7 @@ class SensorDataRepository @Inject constructor(
         val result = mutableMapOf<String, Boolean>()
         
         try {
-            val capabilities = measureClient.getCapabilitiesAsync().await()
+            val capabilities = measureClient.capabilities
             
             result["heartRate"] = DataType.HEART_RATE_BPM in capabilities.supportedDataTypes
             result["steps"] = DataType.STEPS in capabilities.supportedDataTypes

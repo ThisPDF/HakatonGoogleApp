@@ -10,6 +10,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.capitalize
+import androidx.compose.ui.text.intl.Locale
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.example.smarthome.data.Device
@@ -135,7 +137,7 @@ fun AddDeviceDialog(
                 )
                 
                 Text("Device Type")
-                DeviceType.values.forEach { type ->
+                DeviceType.values().forEach { type ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
@@ -159,7 +161,7 @@ fun AddDeviceDialog(
                             selected = selectedRoom == room,
                             onClick = { selectedRoom = room }
                         )
-                        Text(room.capitalize())
+                        Text(room.replaceFirstChar { it.uppercase() })
                     }
                 }
             }

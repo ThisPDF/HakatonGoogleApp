@@ -1,10 +1,14 @@
 package com.example.smarthome.wear.data.repository
 
+import android.util.Log
 import com.example.smarthome.wear.data.bluetooth.BluetoothService
 import com.example.smarthome.wear.data.models.Device
 import com.example.smarthome.wear.data.models.QuickAction
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -12,92 +16,87 @@ import javax.inject.Singleton
 class DeviceRepository @Inject constructor(
     private val bluetoothService: BluetoothService
 ) {
-    suspend fun getDevices(): List<Device> = withContext(Dispatchers.IO) {
-        try {
-            val bluetoothDevices = bluetoothService.getDevices()
-            bluetoothDevices.map { bluetoothDevice ->
-                Device(
-                    id = bluetoothDevice.id,
-                    name = bluetoothDevice.name,
-                    type = bluetoothDevice.type,
-                    roomId = bluetoothDevice.roomId,
-                    isOn = bluetoothDevice.isOn,
-                    brightness = bluetoothDevice.brightness,
-                    temperature = bluetoothDevice.temperature,
-                    isLocked = bluetoothDevice.isLocked
-                )
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            emptyList()
+    private val TAG = "DeviceRepository"
+    
+    // Map BluetoothService.Device to our Device model
+    val devices: Flow<List<Device>> = bluetoothService.devices.map { deviceList ->
+        deviceList.map { device ->
+            Device(
+                id = device.id,
+                name = device.name,
+                type = device.type,
+                roomId = device.roomId,
+                isOn = device.isOn,
+                value = device.value
+            )
         }
     }
+    
+    private val _quickActions = MutableStateFlow<List<QuickAction>>(
+        listOf(
+            QuickAction("1", "All Lights", "bulb", "LIGHT"),
+            QuickAction("2", "Lock Doors", "lock", "LOCK")
+        )
+    )
+    val quickActions: StateFlow<List<QuickAction>> = _quickActions.asStateFlow()
+    
+    private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
+    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    suspend fun getDevice(deviceId: String): Device? = withContext(Dispatchers.IO) {
-        try {
-            val bluetoothDevice = bluetoothService.getDevice(deviceId)
-            bluetoothDevice?.let {
-                Device(
-                    id = it.id,
-                    name = it.name,
-                    type = it.type,
-                    roomId = it.roomId,
-                    isOn = it.isOn,
-                    brightness = it.brightness,
-                    temperature = it.temperature,
-                    isLocked = it.isLocked
-                )
-            }
+    private val _bluetoothStatus = MutableStateFlow(BluetoothStatus(false, false, 0, 0))
+    val bluetoothStatus: StateFlow<BluetoothStatus> = _bluetoothStatus.asStateFlow()
+
+    suspend fun connectToPhone(): Boolean {
+        return try {
+            Log.d(TAG, "Attempting to connect to phone")
+            bluetoothService.connectToPhone()
         } catch (e: Exception) {
-            e.printStackTrace()
-            null
+            Log.e(TAG, "Error connecting to phone: ${e.message}")
+            false
         }
     }
-
-    suspend fun getQuickActions(): List<QuickAction> = withContext(Dispatchers.IO) {
-        try {
-            val bluetoothQuickActions = bluetoothService.getQuickActions()
-            bluetoothQuickActions.map { bluetoothQuickAction ->
-                QuickAction(
-                    id = bluetoothQuickAction.id,
-                    name = bluetoothQuickAction.name,
-                    actionType = bluetoothQuickAction.type, // Map from 'type' to 'actionType'
-                    deviceId = bluetoothQuickAction.deviceId
-                )
-            }
+    
+    suspend fun refreshDevices(): Boolean {
+        return try {
+            Log.d(TAG, "Requesting device refresh")
+            bluetoothService.requestDevices()
         } catch (e: Exception) {
-            e.printStackTrace()
-            emptyList()
-        }
-    }
-
-    suspend fun toggleDevice(deviceId: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            bluetoothService.toggleDevice(deviceId)
-            true
-        } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Error refreshing devices: ${e.message}")
             false
         }
     }
 
-    suspend fun setDeviceValue(deviceId: String, value: Int): Boolean = withContext(Dispatchers.IO) {
-        try {
-            bluetoothService.setDeviceValue(deviceId, value)
-            true
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
+    data class BluetoothStatus(
+        val isAvailable: Boolean,
+        val isEnabled: Boolean,
+        val pairedDevices: Int,
+        val connectedDevices: Int = 0
+    )
+
+    fun checkBluetoothStatus(): BluetoothService.BluetoothStatus {
+        return bluetoothService.checkBluetoothStatus()
     }
 
-    suspend fun executeQuickAction(actionId: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            bluetoothService.executeQuickAction(actionId)
-            true
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
+    fun updateConnectionState(state: ConnectionState) {
+        _connectionState.value = state
+    }
+
+    fun toggleDevice(deviceId: String, isOn: Boolean) {
+        bluetoothService.toggleDevice(deviceId)
+    }
+
+    fun setDeviceValue(deviceId: String, value: Int) {
+        bluetoothService.setDeviceValue(deviceId, value)
+    }
+    
+    fun executeQuickAction(actionId: String): Boolean {
+        return bluetoothService.executeQuickAction(actionId)
+    }
+
+    sealed class ConnectionState {
+        object Disconnected : ConnectionState()
+        object Connecting : ConnectionState()
+        object Connected : ConnectionState()
+        data class Error(val message: String) : ConnectionState()
     }
 }

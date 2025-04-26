@@ -35,24 +35,16 @@ class DashboardViewModel @Inject constructor(
 
     private fun loadDevices() {
         viewModelScope.launch {
-            try {
-                _uiState.update { it.copy(isLoading = true) }
-                val devices = deviceRepository.getDevices()
-                _uiState.update { it.copy(devices = devices, isLoading = false, error = null) }
-            } catch (e: Exception) {
-                _uiState.update { it.copy(isLoading = false, error = e.message) }
+            deviceRepository.devices.collect { devices ->
+                _uiState.update { it.copy(devices = devices, isLoading = false) }
             }
         }
     }
 
     private fun loadQuickActions() {
         viewModelScope.launch {
-            try {
-                val quickActions = deviceRepository.getQuickActions()
-                _uiState.update { it.copy(quickActions = quickActions) }
-            } catch (e: Exception) {
-                // Just log the error, don't update UI state as we already have devices
-                e.printStackTrace()
+            deviceRepository.quickActions.collect { actions ->
+                _uiState.update { it.copy(quickActions = actions) }
             }
         }
     }
@@ -60,17 +52,13 @@ class DashboardViewModel @Inject constructor(
     fun executeQuickAction(actionId: String) {
         viewModelScope.launch {
             try {
-                deviceRepository.executeQuickAction(actionId)
-                // Refresh devices after executing the action
-                loadDevices()
+                val success = deviceRepository.executeQuickAction(actionId)
+                if (!success) {
+                    _uiState.update { it.copy(error = "Failed to execute action") }
+                }
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message) }
             }
         }
-    }
-
-    fun refreshData() {
-        loadDevices()
-        loadQuickActions()
     }
 }

@@ -36,9 +36,9 @@ fun DashboardScreen(
                 onClick = { viewModel.executeQuickAction(action.id) },
                 label = { Text(action.name) },
                 icon = {
-                    when (action.actionType) { // Changed from action.type to action.actionType
-                        "LIGHT" -> IconFromDrawable(WearIcons.Light, contentDescription = null)
-                        "LOCK" -> IconFromDrawable(WearIcons.Lock, contentDescription = null)
+                    when (action.icon) {
+                        "bulb" -> IconFromDrawable(WearIcons.Light, contentDescription = null)
+                        "lock" -> IconFromDrawable(WearIcons.Lock, contentDescription = null)
                         else -> IconFromDrawable(WearIcons.Device, contentDescription = null)
                     }
                 }

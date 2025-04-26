@@ -49,9 +49,50 @@ class DeviceRepository @Inject constructor(
     suspend fun connectToPhone(): Boolean {
         return try {
             Log.d(TAG, "Attempting to connect to phone")
-            bluetoothService.connectToPhone()
+            _connectionState.value = ConnectionState.Connecting
+            
+            // First check Bluetooth status
+            val status = bluetoothService.checkBluetoothStatus()
+            _bluetoothStatus.value = BluetoothStatus(
+                status.isAvailable,
+                status.isEnabled,
+                status.pairedDevices,
+                status.connectedDevices
+            )
+            
+            if (!status.isAvailable) {
+                Log.e(TAG, "Bluetooth is not available")
+                _connectionState.value = ConnectionState.Error("Bluetooth is not available")
+                return false
+            }
+            
+            if (!status.isEnabled) {
+                Log.e(TAG, "Bluetooth is not enabled")
+                _connectionState.value = ConnectionState.Error("Bluetooth is not enabled")
+                return false
+            }
+            
+            if (status.pairedDevices == 0) {
+                Log.e(TAG, "No paired devices found")
+                _connectionState.value = ConnectionState.Error("No paired devices found")
+                return false
+            }
+            
+            // Try to connect
+            val success = bluetoothService.connectToPhone()
+            
+            if (success) {
+                Log.d(TAG, "Successfully connected to phone")
+                _connectionState.value = ConnectionState.Connected
+                return true
+            } else {
+                Log.e(TAG, "Failed to connect to phone")
+                _connectionState.value = ConnectionState.Disconnected
+                return false
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Error connecting to phone: ${e.message}")
+            Log.e(TAG, "Error connecting to phone: ${e.message}", e)
+            _connectionState.value = ConnectionState.Error(e.message ?: "Unknown error")
             false
         }
     }
@@ -61,7 +102,7 @@ class DeviceRepository @Inject constructor(
             Log.d(TAG, "Requesting device refresh")
             bluetoothService.requestDevices()
         } catch (e: Exception) {
-            Log.e(TAG, "Error refreshing devices: ${e.message}")
+            Log.e(TAG, "Error refreshing devices: ${e.message}", e)
             false
         }
     }
@@ -74,14 +115,21 @@ class DeviceRepository @Inject constructor(
     )
 
     fun checkBluetoothStatus(): BluetoothService.BluetoothStatus {
-        return bluetoothService.checkBluetoothStatus()
+        val status = bluetoothService.checkBluetoothStatus()
+        _bluetoothStatus.value = BluetoothStatus(
+            status.isAvailable,
+            status.isEnabled,
+            status.pairedDevices,
+            status.connectedDevices
+        )
+        return status
     }
 
     fun updateConnectionState(state: ConnectionState) {
         _connectionState.value = state
     }
 
-    fun toggleDevice(deviceId: String, isOn: Boolean) {
+    fun toggleDevice(deviceId: String) {
         bluetoothService.toggleDevice(deviceId)
     }
 

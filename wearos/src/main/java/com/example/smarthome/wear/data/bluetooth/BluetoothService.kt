@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.UUID
 import javax.inject.Inject
@@ -28,8 +29,18 @@ class BluetoothService @Inject constructor(
 ) {
     private val TAG = "BluetoothService"
     
-    // Standard UUID for SPP (Serial Port Profile)
+    // Use a well-known UUID for WearOS to phone communication
+    // This is the UUID for Serial Port Profile (SPP)
     private val SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    
+    // Alternative UUIDs to try if the standard one fails
+    private val ALTERNATIVE_UUIDS = listOf(
+        UUID.fromString("0000110a-0000-1000-8000-00805f9b34fb"), // Health Device Profile
+        UUID.fromString("0000110b-0000-1000-8000-00805f9b34fb"), // Health Device Profile
+        UUID.fromString("00001112-0000-1000-8000-00805f9b34fb"), // Headset Profile
+        UUID.fromString("00001115-0000-1000-8000-00805f9b34fb"), // Personal Area Networking
+        UUID.fromString("00001116-0000-1000-8000-00805f9b34fb")  // Network Access Point
+    )
     
     private val bluetoothManager by lazy {
         try {
@@ -60,6 +71,9 @@ class BluetoothService @Inject constructor(
     private val _devices = MutableStateFlow<List<Device>>(emptyList())
     val devices: StateFlow<List<Device>> = _devices.asStateFlow()
     
+    private val _pairedDevices = MutableStateFlow<List<BluetoothDevice>>(emptyList())
+    val pairedDevices: StateFlow<List<BluetoothDevice>> = _pairedDevices.asStateFlow()
+    
     init {
         // Initialize with some mock devices for testing
         _devices.value = listOf(
@@ -68,6 +82,9 @@ class BluetoothService @Inject constructor(
             Device("3", "Kitchen Light", "LIGHT", "kitchen", false, null),
             Device("4", "Thermostat", "THERMOSTAT", "living_room", true, "72")
         )
+        
+        // Try to get paired devices at initialization
+        refreshPairedDevices()
     }
     
     private fun hasBluetoothPermissions(): Boolean {
@@ -92,10 +109,33 @@ class BluetoothService @Inject constructor(
         }
     }
     
+    fun refreshPairedDevices() {
+        if (!hasBluetoothPermissions()) {
+            Log.e(TAG, "Cannot refresh paired devices: missing permissions")
+            return
+        }
+        
+        try {
+            val adapter = bluetoothAdapter ?: return
+            if (!adapter.isEnabled) return
+            
+            val devices = adapter.bondedDevices?.toList() ?: emptyList()
+            Log.d(TAG, "Found ${devices.size} paired devices")
+            devices.forEach { device ->
+                Log.d(TAG, "Paired device: ${device.name ?: "Unknown"} (${device.address})")
+            }
+            _pairedDevices.value = devices
+        } catch (e: Exception) {
+            Log.e(TAG, "Error refreshing paired devices: ${e.message}", e)
+        }
+    }
+    
     fun checkBluetoothStatus(): BluetoothStatus {
         // First check if the device has Bluetooth hardware
         val packageManager = context.packageManager
         val hasBluetooth = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH)
+        
+        Log.d(TAG, "Device has Bluetooth hardware: $hasBluetooth")
         
         if (!hasBluetooth) {
             return BluetoothStatus(
@@ -107,6 +147,7 @@ class BluetoothService @Inject constructor(
         }
         
         if (!hasBluetoothPermissions()) {
+            Log.d(TAG, "Bluetooth permissions not granted")
             return BluetoothStatus(
                 isAvailable = true,
                 isEnabled = false,
@@ -118,25 +159,25 @@ class BluetoothService @Inject constructor(
         val isAvailable = bluetoothAdapter != null
         val isEnabled = isAvailable && (bluetoothAdapter?.isEnabled == true)
         
-        val pairedDevices = if (isEnabled) {
-            try {
-                bluetoothAdapter?.bondedDevices?.size ?: 0
-            } catch (e: Exception) {
-                Log.e(TAG, "Error getting paired devices: ${e.message}", e)
-                0
-            }
-        } else 0
+        Log.d(TAG, "Bluetooth adapter available: $isAvailable, enabled: $isEnabled")
+        
+        // Refresh paired devices
+        refreshPairedDevices()
+        
+        val pairedDevices = _pairedDevices.value.size
         
         val connectedDevices = if (isEnabled) {
             try {
-                bluetoothAdapter?.bondedDevices?.count { device ->
+                _pairedDevices.value.count { device ->
                     device.bondState == BluetoothDevice.BOND_BONDED
-                } ?: 0
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error checking connected devices: ${e.message}", e)
                 0
             }
         } else 0
+        
+        Log.d(TAG, "Paired devices: $pairedDevices, connected: $connectedDevices")
         
         return BluetoothStatus(isAvailable, isEnabled, pairedDevices, connectedDevices)
     }
@@ -169,8 +210,14 @@ class BluetoothService @Inject constructor(
         _connectionState.value = ConnectionState.CONNECTING
         
         try {
+            // Close any existing socket
+            disconnect()
+            
+            // Refresh paired devices list
+            refreshPairedDevices()
+            
             // Get paired devices
-            val pairedDevices = bluetoothAdapter?.bondedDevices ?: emptySet()
+            val pairedDevices = _pairedDevices.value
             
             if (pairedDevices.isEmpty()) {
                 _error.value = "No paired devices found"
@@ -178,33 +225,38 @@ class BluetoothService @Inject constructor(
                 return@withContext false
             }
             
-            // Find the phone device - in a real app, you'd have a way to identify the specific device
-            val phoneDevice = pairedDevices.firstOrNull { device ->
-                // This is a simplified example - in a real app, you'd have a better way to identify the phone
-                device.name?.contains("Phone", ignoreCase = true) == true ||
-                device.name?.contains("Pixel", ignoreCase = true) == true ||
-                device.name?.contains("Galaxy", ignoreCase = true) == true ||
-                device.name?.contains("iPhone", ignoreCase = true) == true
+            // Log all paired devices for debugging
+            pairedDevices.forEach { device ->
+                Log.d(TAG, "Paired device: ${device.name ?: "Unknown"} (${device.address})")
             }
             
-            if (phoneDevice == null) {
-                _error.value = "Phone not found among paired devices"
-                _connectionState.value = ConnectionState.DISCONNECTED
-                return@withContext false
+            // Try to connect to any paired device
+            // In a real app, you'd have a way to identify the specific device
+            for (device in pairedDevices) {
+                Log.d(TAG, "Attempting to connect to device: ${device.name ?: "Unknown"} (${device.address})")
+                
+                // Try the standard UUID first
+                if (tryConnectToDevice(device, SPP_UUID)) {
+                    return@withContext true
+                }
+                
+                // If that fails, try alternative UUIDs
+                for (uuid in ALTERNATIVE_UUIDS) {
+                    if (tryConnectToDevice(device, uuid)) {
+                        return@withContext true
+                    }
+                }
+                
+                // If all UUIDs fail, try createInsecureRfcommSocketToServiceRecord
+                if (tryInsecureConnection(device)) {
+                    return@withContext true
+                }
             }
             
-            // For now, let's simulate a successful connection
-            // In a real app, you'd actually connect to the device
-            _connectionState.value = ConnectionState.CONNECTED
-            _error.value = null
-            
-            // Start listening for data
-            startListening()
-            
-            // Request device list
-            requestDevices()
-            
-            return@withContext true
+            // If we get here, all connection attempts failed
+            _error.value = "Failed to connect to any paired device"
+            _connectionState.value = ConnectionState.DISCONNECTED
+            return@withContext false
             
         } catch (e: IOException) {
             Log.e(TAG, "Connection error: ${e.message}", e)
@@ -216,6 +268,116 @@ class BluetoothService @Inject constructor(
             _error.value = "Unexpected error: ${e.message}"
             _connectionState.value = ConnectionState.DISCONNECTED
             return@withContext false
+        }
+    }
+    
+    private suspend fun tryConnectToDevice(device: BluetoothDevice, uuid: UUID): Boolean {
+        return try {
+            Log.d(TAG, "Trying to connect to ${device.name ?: "Unknown"} with UUID $uuid")
+            
+            // Create socket with timeout
+            val socket = withTimeoutOrNull(5000) {
+                try {
+                    device.createRfcommSocketToServiceRecord(uuid)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error creating socket: ${e.message}", e)
+                    null
+                }
+            } ?: return false
+            
+            // Connect with timeout
+            val connected = withTimeoutOrNull(5000) {
+                try {
+                    // Cancel discovery before connecting
+                    bluetoothAdapter?.cancelDiscovery()
+                    
+                    socket.connect()
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error connecting socket: ${e.message}", e)
+                    try {
+                        socket.close()
+                    } catch (closeException: Exception) {
+                        Log.e(TAG, "Error closing socket: ${closeException.message}", closeException)
+                    }
+                    false
+                }
+            } ?: false
+            
+            if (connected) {
+                this.socket = socket
+                _connectionState.value = ConnectionState.CONNECTED
+                _error.value = null
+                
+                // Start listening for data
+                startListening()
+                
+                // Request device list
+                requestDevices()
+                
+                Log.d(TAG, "Successfully connected to ${device.name ?: "Unknown"}")
+                return true
+            }
+            
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in tryConnectToDevice: ${e.message}", e)
+            false
+        }
+    }
+    
+    private suspend fun tryInsecureConnection(device: BluetoothDevice): Boolean {
+        return try {
+            Log.d(TAG, "Trying insecure connection to ${device.name ?: "Unknown"}")
+            
+            // Create insecure socket with timeout
+            val socket = withTimeoutOrNull(5000) {
+                try {
+                    device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error creating insecure socket: ${e.message}", e)
+                    null
+                }
+            } ?: return false
+            
+            // Connect with timeout
+            val connected = withTimeoutOrNull(5000) {
+                try {
+                    // Cancel discovery before connecting
+                    bluetoothAdapter?.cancelDiscovery()
+                    
+                    socket.connect()
+                    true
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error connecting insecure socket: ${e.message}", e)
+                    try {
+                        socket.close()
+                    } catch (closeException: Exception) {
+                        Log.e(TAG, "Error closing insecure socket: ${closeException.message}", closeException)
+                    }
+                    false
+                }
+            } ?: false
+            
+            if (connected) {
+                this.socket = socket
+                _connectionState.value = ConnectionState.CONNECTED
+                _error.value = null
+                
+                // Start listening for data
+                startListening()
+                
+                // Request device list
+                requestDevices()
+                
+                Log.d(TAG, "Successfully connected to ${device.name ?: "Unknown"} using insecure connection")
+                return true
+            }
+            
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in tryInsecureConnection: ${e.message}", e)
+            false
         }
     }
     

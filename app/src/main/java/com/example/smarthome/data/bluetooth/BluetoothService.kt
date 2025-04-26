@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
 import android.bluetooth.BluetoothSocket
+import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
@@ -69,7 +70,118 @@ class BluetoothService @Inject constructor(
         }
     }
     
-    // Update the connectToDevice method to be more robust
+    // Check if a device is already connected at the system level
+    fun isDeviceConnected(device: BluetoothDevice): Boolean {
+        if (ActivityCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e(TAG, "Bluetooth connect permission not granted")
+            return false
+        }
+        
+        try {
+            // Check if device is connected via any profile
+            val profiles = listOf(
+                BluetoothProfile.HEADSET,
+                BluetoothProfile.A2DP,
+                BluetoothProfile.GATT,
+                BluetoothProfile.GATT_SERVER
+            )
+            
+            for (profile in profiles) {
+                val proxy = getProfileProxy(profile)
+                if (proxy != null) {
+                    val connectedDevices = proxy.connectedDevices
+                    if (connectedDevices.any { it.address == device.address }) {
+                        Log.d(TAG, "Device ${device.name} is already connected via profile $profile")
+                        return true
+                    }
+                }
+            }
+            
+            // Also check if we already have an active connection in our app
+            if (_connectionState.value == ConnectionState.CONNECTED && 
+                _connectedDevice.value?.address == device.address) {
+                return true
+            }
+            
+            return false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking device connection status: ${e.message}")
+            return false
+        }
+    }
+    
+    // Get a BluetoothProfile proxy
+    private fun getProfileProxy(profile: Int): BluetoothProfile? {
+        if (bluetoothAdapter == null) return null
+        
+        var proxy: BluetoothProfile? = null
+        val latch = java.util.concurrent.CountDownLatch(1)
+        
+        try {
+            bluetoothAdapter.getProfileProxy(context, object : BluetoothProfile.ServiceListener {
+                override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+                    this@BluetoothService.proxy = proxy
+                    latch.countDown()
+                }
+                
+                override fun onServiceDisconnected(profile: Int) {
+                    this@BluetoothService.proxy = null
+                }
+            }, profile)
+            
+            // Wait for the proxy with a timeout
+            latch.await(1, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting profile proxy: ${e.message}")
+        }
+        
+        return proxy
+    }
+    
+    private var proxy: BluetoothProfile? = null
+    
+    // Get all connected devices
+    fun getConnectedDevices(): List<BluetoothDevice> {
+        if (ActivityCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.e(TAG, "Bluetooth connect permission not granted")
+            return emptyList()
+        }
+        
+        val connectedDevices = mutableListOf<BluetoothDevice>()
+        
+        try {
+            // Check all profiles for connected devices
+            val profiles = listOf(
+                BluetoothProfile.HEADSET,
+                BluetoothProfile.A2DP,
+                BluetoothProfile.GATT,
+                BluetoothProfile.GATT_SERVER
+            )
+            
+            for (profile in profiles) {
+                val proxy = getProfileProxy(profile)
+                if (proxy != null) {
+                    val devices = proxy.connectedDevices
+                    connectedDevices.addAll(devices)
+                    Log.d(TAG, "Found ${devices.size} devices connected via profile $profile")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting connected devices: ${e.message}")
+        }
+        
+        return connectedDevices.distinctBy { it.address }
+    }
+    
+    // Update the connectToDevice method to check for existing connections
     suspend fun connectToDevice(deviceAddress: String): Boolean {
         if (bluetoothAdapter == null) {
             Log.e(TAG, "Bluetooth is not available")
@@ -102,6 +214,37 @@ class BluetoothService @Inject constructor(
                     Log.e(TAG, "Invalid Bluetooth address: $deviceAddress")
                     _connectionState.value = ConnectionState.DISCONNECTED
                     return@withContext false
+                }
+                
+                // Check if device is already connected at system level
+                val isAlreadyConnected = isDeviceConnected(device)
+                Log.d(TAG, "Device ${device.name} is already connected: $isAlreadyConnected")
+                
+                // If already connected at system level, try to create socket directly
+                if (isAlreadyConnected) {
+                    try {
+                        Log.d(TAG, "Using existing system connection for ${device.name}")
+                        socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
+                        socket?.connect()
+                        
+                        inputStream = socket?.inputStream
+                        outputStream = socket?.outputStream
+                        
+                        if (inputStream == null || outputStream == null) {
+                            throw IOException("Failed to get valid streams")
+                        }
+                        
+                        _connectionState.value = ConnectionState.CONNECTED
+                        _connectedDevice.value = device
+                        
+                        // Start listening for incoming data
+                        startListening()
+                        
+                        return@withContext true
+                    } catch (e: IOException) {
+                        Log.e(TAG, "Failed to use existing connection: ${e.message}")
+                        // Fall back to normal connection process
+                    }
                 }
                 
                 // Close any existing connection
@@ -375,6 +518,48 @@ class BluetoothService @Inject constructor(
             emptyList()
         }
     }
+    
+    // Check Bluetooth status
+    fun checkBluetoothStatus(): BluetoothStatus {
+        val isAvailable = bluetoothAdapter != null
+        val isEnabled = bluetoothAdapter?.isEnabled == true
+        
+        var pairedDeviceCount = 0
+        var connectedDeviceCount = 0
+        
+        if (isEnabled) {
+            try {
+                if (ActivityCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.BLUETOOTH_CONNECT
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    pairedDeviceCount = bluetoothAdapter?.bondedDevices?.size ?: 0
+                    connectedDeviceCount = getConnectedDevices().size
+                    
+                    // Log paired and connected devices for debugging
+                    Log.d(TAG, "Paired devices: $pairedDeviceCount")
+                    Log.d(TAG, "Connected devices: $connectedDeviceCount")
+                    
+                    bluetoothAdapter?.bondedDevices?.forEach { device ->
+                        val isConnected = isDeviceConnected(device)
+                        Log.d(TAG, "Device: ${device.name} (${device.address}) - Connected: $isConnected")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error checking Bluetooth status: ${e.message}")
+            }
+        }
+        
+        return BluetoothStatus(isAvailable, isEnabled, pairedDeviceCount, connectedDeviceCount)
+    }
+    
+    data class BluetoothStatus(
+        val isAvailable: Boolean,
+        val isEnabled: Boolean,
+        val pairedDevices: Int,
+        val connectedDevices: Int
+    )
     
     // Improve the AcceptThread to be more robust
     private inner class AcceptThread : Thread() {

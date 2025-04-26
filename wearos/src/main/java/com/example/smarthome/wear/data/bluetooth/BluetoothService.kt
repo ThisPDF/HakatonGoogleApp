@@ -1,605 +1,430 @@
 package com.example.smarthome.wear.data.bluetooth
 
-import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothSocket
 import android.content.Context
-import android.content.pm.PackageManager
 import android.util.Log
-import androidx.core.app.ActivityCompat
-import com.example.smarthome.wear.data.Device
 import com.example.smarthome.wear.data.repository.DeviceRepository
 import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.lang.reflect.Method
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.delay
 
 @Singleton
 class BluetoothService @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val deviceRepository: DeviceRepository
 ) {
-    private val TAG = "WearBluetoothService"
-    // Standard SPP UUID - must match on both phone and watch
-    private val SERVICE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    private val TAG = "BluetoothService"
     
-    private val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-    private val bluetoothAdapter = bluetoothManager?.adapter
+    // Standard UUID for SPP (Serial Port Profile)
+    private val SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    
+    private val bluetoothManager: BluetoothManager by lazy {
+        context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+    }
+    
+    private val bluetoothAdapter: BluetoothAdapter? by lazy {
+        bluetoothManager.adapter
+    }
     
     private var socket: BluetoothSocket? = null
     private var inputStream: InputStream? = null
     private var outputStream: OutputStream? = null
+    private var connectionJob: Job? = null
+    private var listeningJob: Job? = null
+    private var reconnectJob: Job? = null
     
-    private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
-    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
-    
-    private val _devices = MutableStateFlow<List<Device>>(emptyList())
-    val devices: StateFlow<List<Device>> = _devices.asStateFlow()
-    
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
+    private val _isConnected = MutableStateFlow(false)
+    val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
     
     private val gson = Gson()
+    private val deviceListType = object : TypeToken<List<DeviceRepository.Device>>() {}.type
     
-    enum class ConnectionState {
-        CONNECTED, CONNECTING, DISCONNECTED
+    private var consecutiveErrors = 0
+    private val MAX_CONSECUTIVE_ERRORS = 5
+    private var connectionAttempts = 0
+    private val MAX_CONNECTION_ATTEMPTS = 3
+    
+    init {
+        updateBluetoothStatus()
     }
     
-    // Check if a device is already connected at the system level
-    fun isDeviceConnected(device: BluetoothDevice): Boolean {
-        if (ActivityCompat.checkSelfPermission(
-                context,
-                Manifest.permission.BLUETOOTH_CONNECT
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.e(TAG, "Bluetooth connect permission not granted")
-            return false
-        }
-        
-        try {
-            // Check if device is connected via any profile
-            val profiles = listOf(
-                BluetoothProfile.HEADSET,
-                BluetoothProfile.A2DP,
-                BluetoothProfile.GATT,
-                BluetoothProfile.GATT_SERVER
-            )
-            
-            for (profile in profiles) {
-                val proxy = getProfileProxy(profile)
-                if (proxy != null) {
-                    val connectedDevices = proxy.connectedDevices
-                    if (connectedDevices.any { it.address == device.address }) {
-                        Log.d(TAG, "Device ${device.name} is already connected via profile $profile")
-                        return true
-                    }
-                }
-            }
-            
-            // Also check if we already have an active connection in our app
-            if (_connectionState.value == ConnectionState.CONNECTED && 
-                socket?.remoteDevice?.address == device.address) {
-                return true
-            }
-            
-            return false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error checking device connection status: ${e.message}")
-            return false
-        }
-    }
-    
-    // Get a BluetoothProfile proxy
-    private fun getProfileProxy(profile: Int): BluetoothProfile? {
-        if (bluetoothAdapter == null) return null
-        
-        var proxy: BluetoothProfile? = null
-        val latch = java.util.concurrent.CountDownLatch(1)
-        
-        try {
-            bluetoothAdapter.getProfileProxy(context, object : BluetoothProfile.ServiceListener {
-                override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-                    this@BluetoothService.proxy = proxy
-                    latch.countDown()
-                }
-                
-                override fun onServiceDisconnected(profile: Int) {
-                    this@BluetoothService.proxy = null
-                }
-            }, profile)
-            
-            // Wait for the proxy with a timeout
-            latch.await(1, java.util.concurrent.TimeUnit.SECONDS)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting profile proxy: ${e.message}")
-        }
-        
-        return proxy
-    }
-    
-    private var proxy: BluetoothProfile? = null
-    
-    // Get all connected devices
-    fun getConnectedDevices(): List<BluetoothDevice> {
-        if (ActivityCompat.checkSelfPermission(
-                context,
-                Manifest.permission.BLUETOOTH_CONNECT
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.e(TAG, "Bluetooth connect permission not granted")
-            return emptyList()
-        }
-        
-        val connectedDevices = mutableListOf<BluetoothDevice>()
-        
-        try {
-            // Check all profiles for connected devices
-            val profiles = listOf(
-                BluetoothProfile.HEADSET,
-                BluetoothProfile.A2DP,
-                BluetoothProfile.GATT,
-                BluetoothProfile.GATT_SERVER
-            )
-            
-            for (profile in profiles) {
-                val proxy = getProfileProxy(profile)
-                if (proxy != null) {
-                    val devices = proxy.connectedDevices
-                    connectedDevices.addAll(devices)
-                    Log.d(TAG, "Found ${devices.size} devices connected via profile $profile")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting connected devices: ${e.message}")
-        }
-        
-        return connectedDevices.distinctBy { it.address }
-    }
-    
-    // Check Bluetooth status
-    fun checkBluetoothStatus(): DeviceRepository.BluetoothStatus {
+    @SuppressLint("MissingPermission")
+    fun updateBluetoothStatus() {
         val isAvailable = bluetoothAdapter != null
         val isEnabled = bluetoothAdapter?.isEnabled == true
+        val pairedDevices = bluetoothAdapter?.bondedDevices?.size ?: 0
         
-        var pairedDeviceCount = 0
-        var connectedDeviceCount = 0
+        // Check for already connected devices
+        val connectedDevices = if (isEnabled) {
+            bluetoothAdapter?.bondedDevices?.count { device ->
+                try {
+                    val method = device.javaClass.getMethod("isConnected")
+                    method.invoke(device) as Boolean
+                } catch (e: Exception) {
+                    false
+                }
+            } ?: 0
+        } else {
+            0
+        }
         
-        if (isEnabled) {
+        deviceRepository.updateBluetoothStatus(
+            DeviceRepository.BluetoothStatus(
+                isAvailable = isAvailable,
+                isEnabled = isEnabled,
+                pairedDevices = pairedDevices,
+                connectedDevices = connectedDevices
+            )
+        )
+        
+        // If we have connected devices but our app doesn't show connected,
+        // try to use the existing connection
+        if (connectedDevices > 0 && !_isConnected.value) {
+            Log.d(TAG, "Found $connectedDevices already connected devices, attempting to use existing connection")
+            tryUseExistingConnection()
+        }
+    }
+    
+    @SuppressLint("MissingPermission")
+    private fun tryUseExistingConnection() {
+        CoroutineScope(Dispatchers.IO).launch {
+            bluetoothAdapter?.bondedDevices?.forEach { device ->
+                try {
+                    val method = device.javaClass.getMethod("isConnected")
+                    val isConnected = method.invoke(device) as Boolean
+                    
+                    if (isConnected) {
+                        Log.d(TAG, "Found already connected device: ${device.name}")
+                        // Try to use this connection
+                        connectToDevice(device)
+                        return@forEach
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error checking if device is connected: ${e.message}")
+                }
+            }
+        }
+    }
+    
+    @SuppressLint("MissingPermission")
+    fun connectToPhone() {
+        if (bluetoothAdapter == null) {
+            deviceRepository.updateConnectionState(
+                DeviceRepository.ConnectionState.Error("Bluetooth is not available on this device")
+            )
+            return
+        }
+        
+        if (bluetoothAdapter?.isEnabled == false) {
+            deviceRepository.updateConnectionState(
+                DeviceRepository.ConnectionState.Error("Bluetooth is not enabled")
+            )
+            return
+        }
+        
+        // Check if we're already connected
+        if (_isConnected.value) {
+            Log.d(TAG, "Already connected, no need to reconnect")
+            return
+        }
+        
+        // Reset connection attempts
+        connectionAttempts = 0
+        
+        // Cancel any existing connection job
+        connectionJob?.cancel()
+        
+        connectionJob = CoroutineScope(Dispatchers.IO).launch {
+            deviceRepository.updateConnectionState(DeviceRepository.ConnectionState.Connecting)
+            
+            // First check if any device is already connected at system level
+            val alreadyConnectedDevice = findAlreadyConnectedPhone()
+            if (alreadyConnectedDevice != null) {
+                Log.d(TAG, "Found already connected phone: ${alreadyConnectedDevice.name}")
+                connectToDevice(alreadyConnectedDevice)
+                return@launch
+            }
+            
+            // If no already connected device, try to find and connect to the phone
+            val phoneDevice = findPhone()
+            if (phoneDevice != null) {
+                connectToDevice(phoneDevice)
+            } else {
+                deviceRepository.updateConnectionState(
+                    DeviceRepository.ConnectionState.Error("Could not find paired phone")
+                )
+            }
+        }
+    }
+    
+    @SuppressLint("MissingPermission")
+    private suspend fun findAlreadyConnectedPhone(): BluetoothDevice? {
+        return withContext(Dispatchers.IO) {
             try {
-                if (ActivityCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.BLUETOOTH_CONNECT
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    pairedDeviceCount = bluetoothAdapter?.bondedDevices?.size ?: 0
-                    connectedDeviceCount = getConnectedDevices().size
-                    
-                    // Log paired and connected devices for debugging
-                    Log.d(TAG, "Paired devices: $pairedDeviceCount")
-                    Log.d(TAG, "Connected devices: $connectedDeviceCount")
-                    
-                    bluetoothAdapter?.bondedDevices?.forEach { device ->
-                        val isConnected = isDeviceConnected(device)
-                        Log.d(TAG, "Device: ${device.name} (${device.address}) - Connected: $isConnected")
+                bluetoothAdapter?.bondedDevices?.find { device ->
+                    try {
+                        val method = device.javaClass.getMethod("isConnected")
+                        val isConnected = method.invoke(device) as Boolean
+                        val isPhone = isPhoneDevice(device)
+                        isConnected && isPhone
+                    } catch (e: Exception) {
+                        false
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error checking Bluetooth status: ${e.message}")
+                Log.e(TAG, "Error finding already connected phone: ${e.message}")
+                null
             }
         }
-        
-        return DeviceRepository.BluetoothStatus(isAvailable, isEnabled, pairedDeviceCount, connectedDeviceCount)
     }
     
-    // Improve the connectToPhone method to check for existing connections
-    suspend fun connectToPhone(): Boolean {
-        if (bluetoothAdapter == null) {
-            _error.value = "Bluetooth is not available"
-            Log.e(TAG, "Bluetooth is not available")
-            return false
-        }
-        
-        if (!bluetoothAdapter.isEnabled) {
-            _error.value = "Bluetooth is not enabled"
-            Log.e(TAG, "Bluetooth is not enabled")
-            return false
-        }
-        
+    @SuppressLint("MissingPermission")
+    private suspend fun findPhone(): BluetoothDevice? {
         return withContext(Dispatchers.IO) {
             try {
-                _connectionState.value = ConnectionState.CONNECTING
-                _error.value = null
+                // First try to find a device that matches known phone patterns
+                var device = bluetoothAdapter?.bondedDevices?.find { isPhoneDevice(it) }
                 
-                // Check for permissions
-                if (ActivityCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.BLUETOOTH_CONNECT
-                    ) != PackageManager.PERMISSION_GRANTED
-                ) {
-                    _error.value = "Bluetooth connect permission not granted"
-                    Log.e(TAG, "Bluetooth connect permission not granted")
-                    _connectionState.value = ConnectionState.DISCONNECTED
-                    return@withContext false
+                // If no matching device found, fall back to the first paired device
+                if (device == null && bluetoothAdapter?.bondedDevices?.isNotEmpty() == true) {
+                    device = bluetoothAdapter?.bondedDevices?.first()
+                    Log.d(TAG, "No phone found, falling back to first paired device: ${device?.name}")
                 }
                 
-                // First check if any devices are already connected at system level
-                val connectedDevices = getConnectedDevices()
-                Log.d(TAG, "Found ${connectedDevices.size} devices already connected at system level")
+                device
+            } catch (e: Exception) {
+                Log.e(TAG, "Error finding phone: ${e.message}")
+                null
+            }
+        }
+    }
+    
+    @SuppressLint("MissingPermission")
+    private fun isPhoneDevice(device: BluetoothDevice): Boolean {
+        val name = device.name?.lowercase() ?: return false
+        val phonePatterns = listOf(
+            "phone", "smartphone", "pixel", "galaxy", "iphone", 
+            "android", "mobile", "oneplus", "xiaomi", "redmi", 
+            "poco", "oppo", "vivo", "huawei", "honor", "realme"
+        )
+        
+        return phonePatterns.any { pattern -> name.contains(pattern) }
+    }
+    
+    @SuppressLint("MissingPermission")
+    private suspend fun connectToDevice(device: BluetoothDevice) {
+        withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Attempting to connect to ${device.name}")
                 
-                // Try to use an already connected device first
-                if (connectedDevices.isNotEmpty()) {
-                    for (device in connectedDevices) {
-                        Log.d(TAG, "Trying to use existing connection to ${device.name} (${device.address})")
+                // Try multiple connection attempts with delays
+                while (connectionAttempts < MAX_CONNECTION_ATTEMPTS) {
+                    connectionAttempts++
+                    
+                    try {
+                        // Try standard connection method first
+                        socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
                         
-                        try {
-                            // Close any existing connection
-                            disconnect()
-                            
-                            // Try to create socket using the existing connection
-                            socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
-                            socket?.connect()
-                            
-                            inputStream = socket?.inputStream
-                            outputStream = socket?.outputStream
-                            
-                            if (inputStream != null && outputStream != null) {
-                                Log.d(TAG, "Successfully used existing connection to ${device.name}")
-                                _connectionState.value = ConnectionState.CONNECTED
+                        // Set connection timeout
+                        withContext(Dispatchers.IO) {
+                            try {
+                                socket?.connect()
+                                break // Connection successful, exit the loop
+                            } catch (e: IOException) {
+                                Log.e(TAG, "Standard connection failed, trying fallback: ${e.message}")
+                                socket?.close()
                                 
-                                // Start listening for incoming data
-                                startListening()
-                                
-                                // Request devices from phone
-                                requestDevices()
-                                
-                                return@withContext true
-                            } else {
-                                Log.e(TAG, "Failed to get streams from existing connection")
-                                disconnect()
+                                // Try fallback method using reflection
+                                try {
+                                    val method: Method = device.javaClass.getMethod(
+                                        "createRfcommSocket", Int::class.javaPrimitiveType
+                                    )
+                                    socket = method.invoke(device, 1) as BluetoothSocket
+                                    socket?.connect()
+                                    break // Connection successful, exit the loop
+                                } catch (e2: Exception) {
+                                    Log.e(TAG, "Fallback connection failed: ${e2.message}")
+                                    socket?.close()
+                                    throw e2
+                                }
                             }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to use existing connection: ${e.message}")
-                            disconnect()
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Connection attempt $connectionAttempts failed: ${e.message}")
+                        socket?.close()
+                        
+                        if (connectionAttempts < MAX_CONNECTION_ATTEMPTS) {
+                            val delayTime = 1000L * connectionAttempts
+                            Log.d(TAG, "Retrying in ${delayTime}ms...")
+                            delay(delayTime)
+                        } else {
+                            throw e
                         }
                     }
                 }
                 
-                // If no existing connection worked, fall back to normal connection process
-                // Find the phone from paired devices
-                val pairedDevices = bluetoothAdapter.bondedDevices
+                // If we got here without an exception, we're connected
+                inputStream = socket?.inputStream
+                outputStream = socket?.outputStream
                 
-                if (pairedDevices.isEmpty()) {
-                    _error.value = "No paired devices found"
-                    Log.e(TAG, "No paired devices found")
-                    _connectionState.value = ConnectionState.DISCONNECTED
-                    return@withContext false
-                }
-                
-                // Log all paired devices for debugging
-                Log.d(TAG, "Paired devices:")
-                pairedDevices.forEach { device ->
-                    Log.d(TAG, "Device: ${device.name} (${device.address})")
-                }
-                
-                // Try to find a phone in the paired devices - more comprehensive search
-                val phoneDevice = pairedDevices.find { device -> 
-                    val deviceName = device.name?.lowercase() ?: ""
-                    deviceName.contains("phone") || 
-                    deviceName.contains("galaxy") ||
-                    deviceName.contains("pixel") ||
-                    deviceName.contains("iphone") ||
-                    deviceName.contains("oneplus") ||
-                    deviceName.contains("xiaomi") ||
-                    deviceName.contains("oppo") ||
-                    deviceName.contains("vivo") ||
-                    deviceName.contains("huawei") ||
-                    deviceName.contains("honor") ||
-                    deviceName.contains("realme") ||
-                    deviceName.contains("poco") ||
-                    deviceName.contains("redmi") ||
-                    deviceName.contains("samsung") ||
-                    deviceName.contains("motorola") ||
-                    deviceName.contains("sony") ||
-                    deviceName.contains("lg") ||
-                    deviceName.contains("htc")
-                }
-                
-                // If no phone found by name, try the first paired device
-                val targetDevice = phoneDevice ?: pairedDevices.firstOrNull()
-                
-                if (targetDevice == null) {
-                    _error.value = "No suitable device found in paired devices"
-                    Log.e(TAG, "No suitable device found in paired devices")
-                    _connectionState.value = ConnectionState.DISCONNECTED
-                    return@withContext false
-                }
-                
-                Log.d(TAG, "Attempting to connect to ${targetDevice.name} (${targetDevice.address})")
-                
-                // Close any existing connection
-                disconnect()
-                
-                // Try multiple times to establish connection
-                var connectionAttempts = 0
-                val maxAttempts = 5
-                
-                while (connectionAttempts < maxAttempts) {
-                    connectionAttempts++
-                    Log.d(TAG, "Connection attempt $connectionAttempts of $maxAttempts")
+                if (inputStream != null && outputStream != null) {
+                    _isConnected.value = true
+                    deviceRepository.updateConnectionState(DeviceRepository.ConnectionState.Connected)
+                    consecutiveErrors = 0
+                    startListening()
                     
+                    // Request initial device list
+                    sendData("{\"type\":\"GET_DEVICES\"}")
+                } else {
+                    throw IOException("Failed to get input/output streams")
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to connect after $MAX_CONNECTION_ATTEMPTS attempts: ${e.message}")
+                socket?.close()
+                socket = null
+                inputStream = null
+                outputStream = null
+                _isConnected.value = false
+                deviceRepository.updateConnectionState(
+                    DeviceRepository.ConnectionState.Error("Failed to connect: ${e.message}")
+                )
+            }
+        }
+    }
+    
+    private fun startListening() {
+        // Cancel any existing listening job
+        listeningJob?.cancel()
+        
+        listeningJob = CoroutineScope(Dispatchers.IO).launch {
+            val buffer = ByteArray(1024)
+            var bytes: Int
+            
+            try {
+                while (_isConnected.value) {
                     try {
-                        // Try to create and connect socket
-                        socket = targetDevice.createRfcommSocketToServiceRecord(SERVICE_UUID)
+                        // Check if inputStream is null
+                        val stream = inputStream ?: throw IOException("Input stream is null")
                         
-                        // Set connection timeout
-                        socket?.connect()
-                        Log.d(TAG, "Connected to ${targetDevice.name}")
-                        break
+                        bytes = stream.read(buffer)
+                        if (bytes > 0) {
+                            val data = String(buffer, 0, bytes)
+                            Log.d(TAG, "Received: $data")
+                            
+                            // Process the received data
+                            processReceivedData(data)
+                            
+                            // Reset consecutive errors on successful read
+                            consecutiveErrors = 0
+                        }
                     } catch (e: IOException) {
-                        Log.e(TAG, "Connection attempt $connectionAttempts failed: ${e.message}")
+                        Log.e(TAG, "Error reading from input stream: ${e.message}")
+                        consecutiveErrors++
                         
-                        try {
-                            socket?.close()
-                        } catch (closeException: IOException) {
-                            Log.e(TAG, "Could not close the client socket", closeException)
+                        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                            Log.e(TAG, "Too many consecutive errors, disconnecting")
+                            break
                         }
                         
-                        socket = null
-                        
-                        // Try alternative connection method if standard method fails
-                        if (connectionAttempts == 2) {
-                            try {
-                                Log.d(TAG, "Trying alternative connection method...")
-                                // Use reflection to get a different socket type
-                                val method = targetDevice.javaClass.getMethod("createInsecureRfcommSocketToServiceRecord", UUID::class.java)
-                                socket = method.invoke(targetDevice, SERVICE_UUID) as BluetoothSocket
-                                socket?.connect()
-                                Log.d(TAG, "Connected using alternative method")
-                                break
-                            } catch (e2: Exception) {
-                                Log.e(TAG, "Alternative connection method failed: ${e2.message}")
-                                try {
-                                    socket?.close()
-                                } catch (closeException: IOException) {
-                                    Log.e(TAG, "Could not close the client socket", closeException)
-                                }
-                                socket = null
-                            }
-                        }
-                        
-                        if (connectionAttempts >= maxAttempts) {
-                            _error.value = "Failed to connect after $maxAttempts attempts: ${e.message}"
-                            Log.e(TAG, "Failed to connect after $maxAttempts attempts")
-                            _connectionState.value = ConnectionState.DISCONNECTED
-                            return@withContext false
-                        }
-                        
-                        // Wait before next attempt
+                        // Short delay before retrying
                         delay(1000)
                     }
                 }
-                
-                try {
-                    inputStream = socket?.inputStream
-                    outputStream = socket?.outputStream
-                    
-                    if (inputStream == null || outputStream == null) {
-                        throw IOException("Failed to get valid streams")
-                    }
-                } catch (e: IOException) {
-                    _error.value = "Failed to get streams: ${e.message}"
-                    Log.e(TAG, "Failed to get streams: ${e.message}")
-                    disconnect()
-                    return@withContext false
-                }
-                
-                _connectionState.value = ConnectionState.CONNECTED
-                
-                // Start listening for incoming data
-                startListening()
-                
-                // Request devices from phone
-                requestDevices()
-                
-                true
             } catch (e: Exception) {
-                _error.value = "Unexpected error: ${e.message}"
-                Log.e(TAG, "Unexpected error: ${e.message}")
+                Log.e(TAG, "Listening thread error: ${e.message}")
+            } finally {
                 disconnect()
-                false
             }
+        }
+    }
+    
+    private fun processReceivedData(data: String) {
+        try {
+            if (data.contains("\"devices\":")) {
+                // This is a device list response
+                val startIndex = data.indexOf("[")
+                val endIndex = data.lastIndexOf("]") + 1
+                
+                if (startIndex >= 0 && endIndex > startIndex) {
+                    val devicesJson = data.substring(startIndex, endIndex)
+                    val devices = gson.fromJson<List<DeviceRepository.Device>>(devicesJson, deviceListType)
+                    deviceRepository.updateDevices(devices)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing received data: ${e.message}")
+        }
+    }
+    
+    fun sendData(data: String) {
+        if (!_isConnected.value) {
+            Log.e(TAG, "Cannot send data: not connected")
+            return
+        }
+        
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val stream = outputStream ?: throw IOException("Output stream is null")
+                stream.write(data.toByteArray())
+                Log.d(TAG, "Sent: $data")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending data: ${e.message}")
+                disconnect()
+                
+                // Try to reconnect
+                scheduleReconnect()
+            }
+        }
+    }
+    
+    private fun scheduleReconnect() {
+        // Cancel any existing reconnect job
+        reconnectJob?.cancel()
+        
+        reconnectJob = CoroutineScope(Dispatchers.IO).launch {
+            delay(5000) // Wait 5 seconds before reconnecting
+            Log.d(TAG, "Attempting to reconnect...")
+            connectToPhone()
         }
     }
     
     fun disconnect() {
-        try {
-            inputStream?.close()
-        } catch (e: IOException) {
-            Log.e(TAG, "Error closing input stream: ${e.message}")
-        }
-        
-        try {
-            outputStream?.close()
-        } catch (e: IOException) {
-            Log.e(TAG, "Error closing output stream: ${e.message}")
-        }
-        
-        try {
-            socket?.close()
-        } catch (e: IOException) {
-            Log.e(TAG, "Error closing socket: ${e.message}")
-        }
-        
-        inputStream = null
-        outputStream = null
-        socket = null
-        _connectionState.value = ConnectionState.DISCONNECTED
-    }
-    
-    suspend fun requestDevices(): Boolean {
-        return withContext(Dispatchers.IO) {
+        CoroutineScope(Dispatchers.IO).launch {
             try {
-                if (_connectionState.value != ConnectionState.CONNECTED) {
-                    Log.e(TAG, "Not connected to phone")
-                    return@withContext false
-                }
-                
-                val message = "REQUEST:DEVICES"
-                Log.d(TAG, "Requesting devices from phone")
-                outputStream?.write(message.toByteArray())
-                true
-            } catch (e: IOException) {
-                _error.value = "Error requesting devices: ${e.message}"
-                Log.e(TAG, "Error requesting devices: ${e.message}")
-                disconnect()
-                false
+                listeningJob?.cancel()
+                inputStream?.close()
+                outputStream?.close()
+                socket?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error during disconnect: ${e.message}")
+            } finally {
+                socket = null
+                inputStream = null
+                outputStream = null
+                _isConnected.value = false
+                deviceRepository.updateConnectionState(DeviceRepository.ConnectionState.Disconnected)
             }
-        }
-    }
-    
-    suspend fun sendCommand(deviceId: String, command: String): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                if (_connectionState.value != ConnectionState.CONNECTED) {
-                    Log.e(TAG, "Not connected to phone")
-                    return@withContext false
-                }
-                
-                val message = "COMMAND:$deviceId:$command"
-                outputStream?.write(message.toByteArray())
-                true
-            } catch (e: IOException) {
-                _error.value = "Error sending command: ${e.message}"
-                Log.e(TAG, "Error sending command: ${e.message}")
-                disconnect()
-                false
-            }
-        }
-    }
-    
-    // Improve the startListening method to handle errors better
-    private fun startListening() {
-        Thread {
-            val buffer = ByteArray(1024)
-            var bytes: Int
-            var consecutiveErrors = 0
-            val maxConsecutiveErrors = 5
-            
-            while (_connectionState.value == ConnectionState.CONNECTED) {
-                try {
-                    if (inputStream == null) {
-                        Log.e(TAG, "Input stream is null, stopping listener")
-                        break
-                    }
-                    
-                    bytes = inputStream?.read(buffer) ?: -1
-                    
-                    if (bytes > 0) {
-                        val message = String(buffer, 0, bytes)
-                        Log.d(TAG, "Received data: $message")
-                        processMessage(message)
-                        consecutiveErrors = 0
-                    } else if (bytes < 0) {
-                        // End of stream reached
-                        Log.e(TAG, "End of stream reached")
-                        break
-                    }
-                } catch (e: IOException) {
-                    consecutiveErrors++
-                    Log.e(TAG, "Error reading from stream ($consecutiveErrors/$maxConsecutiveErrors): ${e.message}")
-                    
-                    if (consecutiveErrors >= maxConsecutiveErrors) {
-                        Log.e(TAG, "Too many consecutive errors, disconnecting")
-                        break
-                    }
-                    
-                    // Add a small delay to avoid tight loop on errors
-                    try {
-                        Thread.sleep(500)
-                    } catch (interruptException: InterruptedException) {
-                        Log.e(TAG, "Listener thread sleep interrupted", interruptException)
-                    }
-                } catch (e: Exception) {
-                    consecutiveErrors++
-                    Log.e(TAG, "Unexpected error ($consecutiveErrors/$maxConsecutiveErrors): ${e.message}")
-                    
-                    if (consecutiveErrors >= maxConsecutiveErrors) {
-                        Log.e(TAG, "Too many consecutive errors, disconnecting")
-                        break
-                    }
-                }
-            }
-            
-            disconnect()
-        }.start()
-    }
-    
-    private fun processMessage(message: String) {
-        Log.d(TAG, "Received message: $message")
-        
-        try {
-            when {
-                message.startsWith("DEVICES:") -> {
-                    val json = message.substring(8)
-                    try {
-                        val devices = gson.fromJson(json, Array<Device>::class.java).toList()
-                        _devices.value = devices
-                        Log.d(TAG, "Updated devices list with ${devices.size} devices")
-                    } catch (e: Exception) {
-                        _error.value = "Error parsing devices: ${e.message}"
-                        Log.e(TAG, "Error parsing devices: ${e.message}")
-                    }
-                }
-                message.startsWith("COMMAND:") -> {
-                    val parts = message.split(":")
-                    if (parts.size >= 3) {
-                        val deviceId = parts[1]
-                        val command = parts[2]
-                        // Update local device state
-                        updateDeviceState(deviceId, command)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            _error.value = "Error processing message: ${e.message}"
-            Log.e(TAG, "Error processing message: ${e.message}")
-        }
-    }
-    
-    private fun updateDeviceState(deviceId: String, command: String) {
-        val currentDevices = _devices.value.toMutableList()
-        val deviceIndex = currentDevices.indexOfFirst { it.id == deviceId }
-        
-        if (deviceIndex != -1) {
-            val device = currentDevices[deviceIndex]
-            val updatedDevice = when (command) {
-                "TOGGLE" -> device.copy(isOn = !device.isOn)
-                "ON" -> device.copy(isOn = true)
-                "OFF" -> device.copy(isOn = false)
-                else -> {
-                    if (command.startsWith("VALUE:")) {
-                        val value = command.substring(6)
-                        device.copy(value = value)
-                    } else {
-                        device
-                    }
-                }
-            }
-            
-            currentDevices[deviceIndex] = updatedDevice
-            _devices.value = currentDevices
         }
     }
 }

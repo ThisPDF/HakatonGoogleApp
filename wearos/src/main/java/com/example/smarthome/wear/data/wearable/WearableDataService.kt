@@ -47,6 +47,16 @@ class WearableDataService @Inject constructor(
     
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    // Path constants for data items
+    companion object {
+        const val SENSOR_DATA_PATH = "/sensor_data"
+        const val LOCATION_DATA_PATH = "/location_data"
+        const val HEART_RATE_KEY = "heart_rate"
+        const val STEPS_KEY = "steps"
+        const val LATITUDE_KEY = "latitude"
+        const val LONGITUDE_KEY = "longitude"
+    }
     
     init {
         // Register listeners
@@ -103,50 +113,39 @@ class WearableDataService @Inject constructor(
         }
     }
 
-    suspend fun sendSensorData(
-        heartRate: Float?,
-        steps: Int?,
-        accelerometerData: SensorDataRepository.AccelerometerData?
-    ) {
+    /**
+     * Send sensor data to the connected phone
+     */
+    suspend fun sendSensorData(heartRate: Float, steps: Int) {
         try {
-            val request = PutDataMapRequest.create("/sensor/data").apply {
+            val request = PutDataMapRequest.create(SENSOR_DATA_PATH).apply {
+                dataMap.putFloat(HEART_RATE_KEY, heartRate)
+                dataMap.putInt(STEPS_KEY, steps)
                 dataMap.putLong("timestamp", System.currentTimeMillis())
+            }
 
-                heartRate?.let { dataMap.putFloat("heartRate", it) }
-                steps?.let { dataMap.putInt("steps", it) }
-
-                accelerometerData?.let {
-                    val accDataMap = DataMap()
-                    accDataMap.putFloat("x", it.x)
-                    accDataMap.putFloat("y", it.y)
-                    accDataMap.putFloat("z", it.z)
-                    dataMap.putDataMap("accelerometer", accDataMap)
-                }
-            }.asPutDataRequest()
-
-            val result = dataClient.putDataItem(request).await()
-            Log.d(TAG, "Sensor data sent: ${result.uri}")
+            val result = dataClient.putDataItem(request.asPutDataRequest().setUrgent()).await()
+            Log.d(TAG, "Sensor data sent successfully: $result")
         } catch (e: Exception) {
-            Log.e(TAG, "Error sending sensor data: ${e.message}", e)
-            _error.value = "Error sending sensor data: ${e.message}"
+            Log.e(TAG, "Failed to send sensor data", e)
         }
     }
 
-    suspend fun sendLocationData(locationData: LocationRepository.LocationData) {
+    /**
+     * Send location data to the connected phone
+     */
+    suspend fun sendLocationData(latitude: Double, longitude: Double) {
         try {
-            val request = PutDataMapRequest.create("/location/data").apply {
+            val request = PutDataMapRequest.create(LOCATION_DATA_PATH).apply {
+                dataMap.putDouble(LATITUDE_KEY, latitude)
+                dataMap.putDouble(LONGITUDE_KEY, longitude)
                 dataMap.putLong("timestamp", System.currentTimeMillis())
-                dataMap.putDouble("latitude", locationData.latitude)
-                dataMap.putDouble("longitude", locationData.longitude)
-                dataMap.putFloat("accuracy", locationData.accuracy)
-                dataMap.putLong("locationTimestamp", locationData.timestamp)
-            }.asPutDataRequest()
-        
-            val result = dataClient.putDataItem(request).await()
-            Log.d(TAG, "Location data sent: ${result.uri}")
+            }
+
+            val result = dataClient.putDataItem(request.asPutDataRequest().setUrgent()).await()
+            Log.d(TAG, "Location data sent successfully: $result")
         } catch (e: Exception) {
-            Log.e(TAG, "Error sending location data: ${e.message}", e)
-            _error.value = "Error sending location data: ${e.message}"
+            Log.e(TAG, "Failed to send location data", e)
         }
     }
     

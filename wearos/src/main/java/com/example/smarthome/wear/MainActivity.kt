@@ -2,45 +2,42 @@ package com.example.smarthome.wear
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
-import androidx.wear.compose.navigation.SwipeDismissableNavHost
-import androidx.wear.compose.navigation.composable
-import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
-import com.example.smarthome.wear.ui.connection.ConnectionScreen
-import com.example.smarthome.wear.ui.dashboard.DashboardScreen
-import com.example.smarthome.wear.ui.device.DeviceDetailScreen
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.wear.compose.material.MaterialTheme
+import androidx.wear.compose.material.Surface
+import com.example.smarthome.wear.ui.sensors.SensorsScreen
 import com.example.smarthome.wear.ui.theme.SmartHomeTheme
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     
-    private val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        arrayOf(
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
-    } else {
-        arrayOf(
-            Manifest.permission.BLUETOOTH,
-            Manifest.permission.BLUETOOTH_ADMIN,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
-    }
+    private val requiredPermissions = arrayOf(
+        Manifest.permission.BODY_SENSORS,
+        Manifest.permission.ACTIVITY_RECOGNITION,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    )
     
-    private val requestPermissionLauncher = registerForActivityResult(
+    private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.entries.all { it.value }
         if (allGranted) {
-            // All permissions granted, proceed with Bluetooth operations
+            // All permissions granted, proceed with app functionality
+        } else {
+            // Handle permission denial
         }
     }
     
@@ -53,48 +50,30 @@ class MainActivity : ComponentActivity() {
         }.toTypedArray()
         
         if (permissionsToRequest.isNotEmpty()) {
-            requestPermissionLauncher.launch(permissionsToRequest)
+            permissionLauncher.launch(permissionsToRequest)
         }
         
         setContent {
             SmartHomeTheme {
-                WearApp()
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colors.background
+                ) {
+                    WearApp()
+                }
             }
         }
     }
 }
 
 @Composable
-fun WearApp() {
-    val navController = rememberSwipeDismissableNavController()
-    
-    SwipeDismissableNavHost(
+fun WearApp(navController: NavHostController = rememberNavController()) {
+    NavHost(
         navController = navController,
-        startDestination = "connection"
+        startDestination = "sensors"
     ) {
-        composable("connection") {
-            ConnectionScreen(
-                onConnected = {
-                    navController.navigate("dashboard") {
-                        popUpTo("connection") { inclusive = true }
-                    }
-                }
-            )
-        }
-        
-        composable("dashboard") {
-            DashboardScreen(
-                onDeviceClick = { deviceId ->
-                    navController.navigate("device/$deviceId")
-                }
-            )
-        }
-        
-        composable("device/{deviceId}") { backStackEntry ->
-            val deviceId = backStackEntry.arguments?.getString("deviceId") ?: ""
-            DeviceDetailScreen(
-                deviceId = deviceId
-            )
+        composable("sensors") {
+            SensorsScreen()
         }
     }
 }

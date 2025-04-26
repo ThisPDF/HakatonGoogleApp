@@ -17,6 +17,8 @@
     <!-- Internet permission -->
     <uses-permission android:name="android.permission.INTERNET" />
     
+    <!-- Declare that this app uses Bluetooth -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
     <uses-feature android:name="android.hardware.type.watch" />
 
     <application

@@ -27,7 +27,7 @@ class ConnectionViewModel @Inject constructor(
         try {
             observeConnectionState()
             observeBluetoothError()
-            // Don't check Bluetooth status here - wait for permissions
+            checkBluetoothStatus()
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing ConnectionViewModel: ${e.message}", e)
             _uiState.update { 
@@ -81,11 +81,13 @@ class ConnectionViewModel @Inject constructor(
     fun checkBluetoothStatus() {
         try {
             val status = bluetoothService.checkBluetoothStatus()
+            Log.d(TAG, "Bluetooth status: available=${status.isAvailable}, enabled=${status.isEnabled}, paired=${status.pairedDevices}")
             _uiState.update { 
                 it.copy(
                     isBluetoothAvailable = status.isAvailable,
                     isBluetoothEnabled = status.isEnabled,
-                    pairedDevices = status.pairedDevices
+                    pairedDevices = status.pairedDevices,
+                    error = if (!status.isAvailable) "Bluetooth is not available on this device" else null
                 )
             }
         } catch (e: Exception) {
@@ -134,7 +136,7 @@ class ConnectionViewModel @Inject constructor(
     data class ConnectionUiState(
         val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
         val isConnecting: Boolean = false,
-        val isBluetoothAvailable: Boolean = false,
+        val isBluetoothAvailable: Boolean = true,  // Default to true until we check
         val isBluetoothEnabled: Boolean = false,
         val pairedDevices: Int = 0,
         val error: String? = null

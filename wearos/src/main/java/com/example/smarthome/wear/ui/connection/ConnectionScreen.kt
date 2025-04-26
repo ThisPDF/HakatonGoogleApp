@@ -1,8 +1,10 @@
 package com.example.smarthome.wear.ui.connection
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -113,6 +115,32 @@ fun ConnectionScreen(
                             style = MaterialTheme.typography.body1,
                             textAlign = TextAlign.Center
                         )
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        // Add a button to open Bluetooth settings
+                        // This might help in case the Bluetooth adapter is just disabled
+                        Button(
+                            onClick = { 
+                                try {
+                                    context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                                } catch (e: Exception) {
+                                    // Ignore if settings can't be opened
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Open Bluetooth Settings")
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Button(
+                            onClick = { viewModel.checkBluetoothStatus() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Check Again")
+                        }
                     }
                     !uiState.isBluetoothEnabled -> {
                         Text(
@@ -120,6 +148,21 @@ fun ConnectionScreen(
                             style = MaterialTheme.typography.body1,
                             textAlign = TextAlign.Center
                         )
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Button(
+                            onClick = { 
+                                try {
+                                    context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                                } catch (e: Exception) {
+                                    // Ignore if settings can't be opened
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Enable Bluetooth")
+                        }
                         
                         Spacer(modifier = Modifier.height(8.dp))
                         
@@ -136,6 +179,21 @@ fun ConnectionScreen(
                             style = MaterialTheme.typography.body1,
                             textAlign = TextAlign.Center
                         )
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Button(
+                            onClick = { 
+                                try {
+                                    context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                                } catch (e: Exception) {
+                                    // Ignore if settings can't be opened
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Open Bluetooth Settings")
+                        }
                         
                         Spacer(modifier = Modifier.height(8.dp))
                         

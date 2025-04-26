@@ -93,9 +93,22 @@ class BluetoothService @Inject constructor(
     }
     
     fun checkBluetoothStatus(): BluetoothStatus {
+        // First check if the device has Bluetooth hardware
+        val packageManager = context.packageManager
+        val hasBluetooth = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH)
+        
+        if (!hasBluetooth) {
+            return BluetoothStatus(
+                isAvailable = false,
+                isEnabled = false,
+                pairedDevices = 0,
+                connectedDevices = 0
+            )
+        }
+        
         if (!hasBluetoothPermissions()) {
             return BluetoothStatus(
-                isAvailable = bluetoothAdapter != null,
+                isAvailable = true,
                 isEnabled = false,
                 pairedDevices = 0,
                 connectedDevices = 0
@@ -131,6 +144,15 @@ class BluetoothService @Inject constructor(
     suspend fun connectToPhone(): Boolean = withContext(Dispatchers.IO) {
         if (!hasBluetoothPermissions()) {
             _error.value = "Bluetooth permissions not granted"
+            return@withContext false
+        }
+        
+        // Check if the device has Bluetooth hardware
+        val packageManager = context.packageManager
+        val hasBluetooth = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH)
+        
+        if (!hasBluetooth) {
+            _error.value = "This device does not have Bluetooth hardware"
             return@withContext false
         }
         

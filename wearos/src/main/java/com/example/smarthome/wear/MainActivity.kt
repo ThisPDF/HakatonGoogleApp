@@ -53,7 +53,9 @@ fun WearApp() {
         
         composable("device/{deviceId}") { backStackEntry ->
             val deviceId = backStackEntry.arguments?.getString("deviceId") ?: ""
-            DeviceDetailScreen(deviceId = deviceId)
+            DeviceDetailScreen(
+                deviceId = deviceId
+            )
         }
     }
 }

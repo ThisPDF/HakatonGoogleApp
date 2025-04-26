@@ -13,6 +13,7 @@ import com.example.smarthome.wear.ui.theme.WearIcons
 
 @Composable
 fun DeviceDetailScreen(
+    deviceId: String,
     viewModel: DeviceViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()

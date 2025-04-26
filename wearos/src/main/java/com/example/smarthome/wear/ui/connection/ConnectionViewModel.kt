@@ -1,6 +1,5 @@
 package com.example.smarthome.wear.ui.connection
 
-import android.bluetooth.BluetoothDevice
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -28,7 +27,6 @@ class ConnectionViewModel @Inject constructor(
         try {
             observeConnectionState()
             observeBluetoothError()
-            observePairedDevices()
             checkBluetoothStatus()
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing ConnectionViewModel: ${e.message}", e)
@@ -79,18 +77,6 @@ class ConnectionViewModel @Inject constructor(
             }
         }
     }
-    
-    private fun observePairedDevices() {
-        viewModelScope.launch {
-            try {
-                bluetoothService.pairedDevices.collect { devices ->
-                    _uiState.update { it.copy(pairedDevices = devices) }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error observing paired devices: ${e.message}", e)
-            }
-        }
-    }
 
     fun checkBluetoothStatus() {
         try {
@@ -100,7 +86,7 @@ class ConnectionViewModel @Inject constructor(
                 it.copy(
                     isBluetoothAvailable = status.isAvailable,
                     isBluetoothEnabled = status.isEnabled,
-                    pairedDevicesCount = status.pairedDevices,
+                    pairedDevices = status.pairedDevices,
                     error = if (!status.isAvailable) "Bluetooth is not available on this device" else null
                 )
             }
@@ -152,8 +138,7 @@ class ConnectionViewModel @Inject constructor(
         val isConnecting: Boolean = false,
         val isBluetoothAvailable: Boolean = true,  // Default to true until we check
         val isBluetoothEnabled: Boolean = false,
-        val pairedDevicesCount: Int = 0,
-        val pairedDevices: List<BluetoothDevice> = emptyList(),
+        val pairedDevices: Int = 0,
         val error: String? = null
     )
 

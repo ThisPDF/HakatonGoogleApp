@@ -2,11 +2,14 @@ package com.example.smarthome.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.smarthome.data.preferences.UserPreferencesViewModel
+import com.example.smarthome.data.preferences.UserPreferences
+import com.example.smarthome.data.preferences.UserPreferencesRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -20,20 +23,31 @@ data class SettingsUiState(
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val userPreferencesViewModel: UserPreferencesViewModel
+    private val userPreferencesRepository: UserPreferencesRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
     
-    val userPreferences = userPreferencesViewModel.userPreferences
+    val userPreferences: StateFlow<UserPreferences> = userPreferencesRepository.userPreferencesFlow
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = UserPreferences()
+        )
 
     fun toggleDarkMode() {
-        userPreferencesViewModel.toggleDarkTheme()
+        viewModelScope.launch {
+            val currentValue = userPreferences.value.useDarkTheme ?: false
+            userPreferencesRepository.updateDarkTheme(!currentValue)
+        }
     }
 
     fun toggleNotifications() {
-        userPreferencesViewModel.toggleNotifications()
+        viewModelScope.launch {
+            val currentValue = userPreferences.value.notificationsEnabled
+            userPreferencesRepository.updateNotifications(!currentValue)
+        }
     }
 
     fun updateControllerIp(ip: String) {

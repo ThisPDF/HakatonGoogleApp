@@ -1,68 +1,124 @@
 package com.example.smarthome.wear.data.bluetooth
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothManager
-import android.bluetooth.BluetoothSocket
+import android.bluetooth.*
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
-import java.util.UUID
+import java.util.*
 import javax.inject.Inject
 import javax.inject.Singleton
+import java.io.InputStream
+import java.io.OutputStream
 
+/**
+ * Data class representing a device
+ */
+data class Device(
+    val id: String,
+    val name: String,
+    val type: String,
+    val status: Boolean,
+    val value: String? = null
+)
+
+/**
+ * Data class representing Bluetooth status
+ */
+data class BluetoothStatus(
+    val isAvailable: Boolean,
+    val isEnabled: Boolean,
+    val pairedDevices: Int,
+    val connectedDevices: Int
+)
+
+/**
+ * Enum representing connection states
+ */
+enum class ConnectionState {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED
+}
+
+/**
+ * Service for managing Bluetooth LE connections to the smart home system
+ */
 @Singleton
 class BluetoothService @Inject constructor(
-   @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context
 ) {
     private val TAG = "BluetoothService"
     
-    // Use a well-known UUID for WearOS to phone communication
-    // This is the UUID for Serial Port Profile (SPP)
-    private val SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    // UUIDs for services and characteristics - must match the server
+    companion object {
+        // Service UUIDs
+        val SMART_HOME_SERVICE_UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
+        
+        // Characteristic UUIDs
+        val DEVICE_LIST_CHARACTERISTIC_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
+        val DEVICE_CONTROL_CHARACTERISTIC_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a9")
+        val TEMPERATURE_CHARACTERISTIC_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26aa")
+        
+        // Descriptor UUIDs
+        val CLIENT_CONFIG_DESCRIPTOR_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    }
     
-    // Alternative UUIDs to try if the standard one fails
-    private val ALTERNATIVE_UUIDS = listOf(
-        UUID.fromString("0000110a-0000-1000-8000-00805f9b34fb"), // Health Device Profile
-        UUID.fromString("0000110b-0000-1000-8000-00805f9b34fb"), // Health Device Profile
-        UUID.fromString("00001112-0000-1000-8000-00805f9b34fb"), // Headset Profile
-        UUID.fromString("00001115-0000-1000-8000-00805f9b34fb"), // Personal Area Networking
-        UUID.fromString("00001116-0000-1000-8000-00805f9b34fb")  // Network Access Point
-    )
+    // State flows for observing data
+    private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
     
+    private val _devices = MutableStateFlow<List<Device>>(emptyList())
+    val devices: StateFlow<List<Device>> = _devices.asStateFlow()
+    
+    private val _temperature = MutableStateFlow<Float?>(null)
+    val temperature: StateFlow<Float?> = _temperature.asStateFlow()
+    
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+    
+    private val _scanResults = MutableStateFlow<List<BluetoothDevice>>(emptyList())
+    val scanResults: StateFlow<List<BluetoothDevice>> = _scanResults.asStateFlow()
+    
+    // Bluetooth objects
     private val bluetoothManager by lazy {
-        try {
-            context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting BluetoothManager: ${e.message}", e)
-            null
-        }
+        context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
     }
     
     private val bluetoothAdapter by lazy {
-        try {
-            bluetoothManager?.adapter
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting BluetoothAdapter: ${e.message}", e)
-            null
-        }
+        bluetoothManager?.adapter
     }
+    
+    private var bluetoothGatt: BluetoothGatt? = null
+    private var bluetoothLeScanner: BluetoothLeScanner? = null
+    private var isScanning = false
+    
+    // Handler for timeouts
+    private val handler = Handler(Looper.getMainLooper())
+    private val coroutineScope = CoroutineScope(Dispatchers.IO)
+    
+    // JSON serialization
+    private val gson = Gson()
     
     private var socket: BluetoothSocket? = null
     private var inputStream: InputStream? = null
@@ -72,31 +128,6 @@ class BluetoothService @Inject constructor(
     
     // Create a coroutine scope for this service
     private val serviceScope = CoroutineScope(Dispatchers.IO)
-    
-    private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
-    val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
-    
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
-    
-    private val _devices = MutableStateFlow<List<Device>>(emptyList())
-    val devices: StateFlow<List<Device>> = _devices.asStateFlow()
-    
-    private val _pairedDevices = MutableStateFlow<List<BluetoothDevice>>(emptyList())
-    val pairedDevices: StateFlow<List<BluetoothDevice>> = _pairedDevices.asStateFlow()
-    
-    init {
-        // Initialize with some mock devices for testing
-        _devices.value = listOf(
-            Device("1", "Living Room Light", "LIGHT", "living_room", true, null),
-            Device("2", "Bedroom Light", "LIGHT", "bedroom", false, null),
-            Device("3", "Kitchen Light", "LIGHT", "kitchen", false, null),
-            Device("4", "Thermostat", "THERMOSTAT", "living_room", true, "72")
-        )
-        
-        // Try to get paired devices at initialization
-        refreshPairedDevices()
-    }
     
     private fun hasBluetoothPermissions(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -120,539 +151,491 @@ class BluetoothService @Inject constructor(
         }
     }
     
-    fun refreshPairedDevices() {
-        if (!hasBluetoothPermissions()) {
-            Log.e(TAG, "Cannot refresh paired devices: missing permissions")
-            return
-        }
-        
-        try {
-            val adapter = bluetoothAdapter ?: return
-            if (!adapter.isEnabled) return
-            
-            val devices = adapter.bondedDevices?.toList() ?: emptyList()
-            Log.d(TAG, "Found ${devices.size} paired devices")
-            devices.forEach { device ->
-                Log.d(TAG, "Paired device: ${device.name ?: "Unknown"} (${device.address})")
-            }
-            _pairedDevices.value = devices
-        } catch (e: Exception) {
-            Log.e(TAG, "Error refreshing paired devices: ${e.message}", e)
-        }
-    }
-    
+    // Check Bluetooth status
     fun checkBluetoothStatus(): BluetoothStatus {
-        // First check if the device has Bluetooth hardware
-        val packageManager = context.packageManager
-        val hasBluetooth = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH)
-        
-        Log.d(TAG, "Device has Bluetooth hardware: $hasBluetooth")
-        
-        if (!hasBluetooth) {
-            return BluetoothStatus(
-                isAvailable = false,
-                isEnabled = false,
-                pairedDevices = 0,
-                connectedDevices = 0
-            )
-        }
-        
-        if (!hasBluetoothPermissions()) {
-            Log.d(TAG, "Bluetooth permissions not granted")
-            return BluetoothStatus(
-                isAvailable = true,
-                isEnabled = false,
-                pairedDevices = 0,
-                connectedDevices = 0
-            )
-        }
-        
         val isAvailable = bluetoothAdapter != null
         val isEnabled = isAvailable && (bluetoothAdapter?.isEnabled == true)
         
-        Log.d(TAG, "Bluetooth adapter available: $isAvailable, enabled: $isEnabled")
-        
-        // Refresh paired devices
-        refreshPairedDevices()
-        
-        val pairedDevices = _pairedDevices.value.size
-        
-        val connectedDevices = if (isEnabled) {
+        val pairedDevices = if (isEnabled && hasBluetoothPermissions()) {
             try {
-                _pairedDevices.value.count { device ->
-                    device.bondState == BluetoothDevice.BOND_BONDED
-                }
+                bluetoothAdapter?.bondedDevices?.size ?: 0
             } catch (e: Exception) {
-                Log.e(TAG, "Error checking connected devices: ${e.message}", e)
+                Log.e(TAG, "Error getting paired devices", e)
                 0
             }
         } else 0
         
-        Log.d(TAG, "Paired devices: $pairedDevices, connected: $connectedDevices")
-        
-        return BluetoothStatus(isAvailable, isEnabled, pairedDevices, connectedDevices)
+        return BluetoothStatus(isAvailable, isEnabled, pairedDevices, 0)
     }
     
-    suspend fun connectToPhone(): Boolean = withContext(Dispatchers.IO) {
+    // Start scanning for BLE devices
+    fun startScan() {
+        if (!hasBluetoothPermissions()) {
+            _error.value = "Bluetooth permissions not granted"
+            return
+        }
+        
+        if (bluetoothAdapter == null || !bluetoothAdapter!!.isEnabled) {
+            _error.value = "Bluetooth is not enabled"
+            return
+        }
+        
+        if (isScanning) {
+            return
+        }
+        
+        // Clear previous results
+        _scanResults.value = emptyList()
+        
+        coroutineScope.launch {
+            try {
+                bluetoothLeScanner = bluetoothAdapter?.bluetoothLeScanner
+                
+                if (bluetoothLeScanner == null) {
+                    _error.value = "Bluetooth LE scanner not available"
+                    return@launch
+                }
+                
+                // Set up scan filters to only find devices with our service UUID
+                val filters = listOf(
+                    ScanFilter.Builder()
+                        .setServiceUuid(ParcelUuid(SMART_HOME_SERVICE_UUID))
+                        .build()
+                )
+                
+                // Set up scan settings
+                val settings = ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .build()
+                
+                isScanning = true
+                
+                // Start scanning
+                bluetoothLeScanner?.startScan(filters, settings, scanCallback)
+                Log.d(TAG, "Started BLE scan")
+                
+                // Stop scanning after a timeout
+                handler.postDelayed({
+                    stopScan()
+                }, 10000) // 10 seconds
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting scan", e)
+                _error.value = "Error starting scan: ${e.message}"
+                isScanning = false
+            }
+        }
+    }
+    
+    // Stop scanning for BLE devices
+    fun stopScan() {
+        if (!isScanning) {
+            return
+        }
+        
+        coroutineScope.launch {
+            try {
+                bluetoothLeScanner?.stopScan(scanCallback)
+                isScanning = false
+                Log.d(TAG, "Stopped BLE scan")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping scan", e)
+            }
+        }
+    }
+    
+    // Scan callback
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            if (!hasBluetoothPermissions()) {
+                return
+            }
+            
+            try {
+                val device = result.device
+                val deviceName = device.name ?: "Unknown Device"
+                
+                Log.d(TAG, "Found device: $deviceName (${device.address})")
+                
+                // Add to scan results if not already present
+                val currentResults = _scanResults.value.toMutableList()
+                if (!currentResults.any { it.address == device.address }) {
+                    currentResults.add(device)
+                    _scanResults.value = currentResults
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error processing scan result", e)
+            }
+        }
+        
+        override fun onScanFailed(errorCode: Int) {
+            isScanning = false
+            _error.value = "Scan failed with error code: $errorCode"
+            Log.e(TAG, "BLE scan failed with error code: $errorCode")
+        }
+    }
+    
+    // Connect to a device
+    suspend fun connectToDevice(device: BluetoothDevice): Boolean = withContext(Dispatchers.IO) {
         if (!hasBluetoothPermissions()) {
             _error.value = "Bluetooth permissions not granted"
             return@withContext false
         }
         
-        // Check if the device has Bluetooth hardware
-        val packageManager = context.packageManager
-        val hasBluetooth = packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH)
-        
-        if (!hasBluetooth) {
-            _error.value = "This device does not have Bluetooth hardware"
-            return@withContext false
-        }
-        
-        if (bluetoothAdapter == null) {
-            _error.value = "Bluetooth is not available on this device"
-            return@withContext false
-        }
-        
-        if (bluetoothAdapter?.isEnabled != true) {
-            _error.value = "Bluetooth is not enabled"
-            return@withContext false
-        }
-        
-        _connectionState.value = ConnectionState.CONNECTING
-        
         try {
-            // Close any existing socket
+            // Disconnect from any existing connection
             disconnect()
             
-            // Refresh paired devices list
-            refreshPairedDevices()
+            _connectionState.value = ConnectionState.CONNECTING
             
-            // Get paired devices
-            val pairedDevices = _pairedDevices.value
+            // Connect to the device
+            bluetoothGatt = device.connectGatt(context, false, gattCallback)
             
-            if (pairedDevices.isEmpty()) {
-                _error.value = "No paired devices found"
+            if (bluetoothGatt == null) {
                 _connectionState.value = ConnectionState.DISCONNECTED
+                _error.value = "Failed to connect to device"
                 return@withContext false
             }
             
-            // Log all paired devices for debugging
-            pairedDevices.forEach { device ->
-                Log.d(TAG, "Paired device: ${device.name ?: "Unknown"} (${device.address})")
-            }
+            Log.d(TAG, "Connecting to device: ${device.name ?: "Unknown"} (${device.address})")
             
-            // Try to connect to any paired device
-            // In a real app, you'd have a way to identify the specific device
-            for (device in pairedDevices) {
-                Log.d(TAG, "Attempting to connect to device: ${device.name ?: "Unknown"} (${device.address})")
-                
-                // Try multiple connection methods with retries
-                var retryCount = 0
-                var connected = false
-                
-                while (retryCount < MAX_CONNECTION_RETRIES && !connected) {
-                    // Try the standard UUID first
-                    if (tryConnectToDevice(device, SPP_UUID)) {
-                        connected = true
-                        break
-                    }
-                    
-                    // If that fails, try alternative UUIDs
-                    for (uuid in ALTERNATIVE_UUIDS) {
-                        if (tryConnectToDevice(device, uuid)) {
-                            connected = true
-                            break
-                        }
-                    }
-                    
-                    // If all UUIDs fail, try createInsecureRfcommSocketToServiceRecord
-                    if (!connected && tryInsecureConnection(device)) {
-                        connected = true
-                        break
-                    }
-                    
-                    // If still not connected, increment retry count and try again
-                    if (!connected) {
-                        retryCount++
-                        if (retryCount < MAX_CONNECTION_RETRIES) {
-                            Log.d(TAG, "Retrying connection (${retryCount}/${MAX_CONNECTION_RETRIES})")
-                            kotlinx.coroutines.delay(2000) // Wait 2 seconds before retrying
-                        }
-                    }
-                }
-                
-                if (connected) {
-                    return@withContext true
-                }
-            }
-            
-            // If we get here, all connection attempts failed
-            _error.value = "Failed to connect to any paired device"
-            _connectionState.value = ConnectionState.DISCONNECTED
-            return@withContext false
-            
-        } catch (e: IOException) {
-            Log.e(TAG, "Connection error: ${e.message}", e)
-            _error.value = "Connection error: ${e.message}"
-            _connectionState.value = ConnectionState.DISCONNECTED
-            return@withContext false
+            // Wait for connection to complete (handled in callback)
+            // Return true to indicate connection attempt started
+            return@withContext true
         } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error: ${e.message}", e)
-            _error.value = "Unexpected error: ${e.message}"
+            Log.e(TAG, "Error connecting to device", e)
             _connectionState.value = ConnectionState.DISCONNECTED
+            _error.value = "Error connecting to device: ${e.message}"
             return@withContext false
         }
     }
     
-    private suspend fun tryConnectToDevice(device: BluetoothDevice, uuid: UUID): Boolean {
-        return try {
-            Log.d(TAG, "Trying to connect to ${device.name ?: "Unknown"} with UUID $uuid")
-            
-            // Create socket with timeout
-            val socket = withTimeoutOrNull(CONNECTION_TIMEOUT) {
-                try {
-                    device.createRfcommSocketToServiceRecord(uuid)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error creating socket: ${e.message}", e)
-                    null
-                }
-            } ?: return false
-            
-            // Connect with timeout
-            val connected = withTimeoutOrNull(CONNECTION_TIMEOUT) {
-                try {
-                    // Cancel discovery before connecting
-                    bluetoothAdapter?.cancelDiscovery()
-                    
-                    socket.connect()
-                    true
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error connecting socket: ${e.message}", e)
-                    try {
-                        socket.close()
-                    } catch (closeException: Exception) {
-                        Log.e(TAG, "Error closing socket: ${closeException.message}", closeException)
-                    }
-                    false
-                }
-            } ?: false
-            
-            if (connected) {
-                this.socket = socket
-                
-                // Set up input and output streams
-                try {
-                    inputStream = socket.inputStream
-                    outputStream = socket.outputStream
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error getting streams: ${e.message}", e)
-                    try {
-                        socket.close()
-                    } catch (closeException: Exception) {
-                        Log.e(TAG, "Error closing socket: ${closeException.message}", closeException)
-                    }
-                    return false
-                }
-                
-                _connectionState.value = ConnectionState.CONNECTED
-                _error.value = null
-                
-                // Start listening for data
-                startListening()
-                
-                // Request device list
-                requestDevices()
-                
-                Log.d(TAG, "Successfully connected to ${device.name ?: "Unknown"}")
-                return true
+    // GATT callback
+    private val gattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (!hasBluetoothPermissions()) {
+                return
             }
-            
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in tryConnectToDevice: ${e.message}", e)
-            false
-        }
-    }
-    
-    private suspend fun tryInsecureConnection(device: BluetoothDevice): Boolean {
-        return try {
-            Log.d(TAG, "Trying insecure connection to ${device.name ?: "Unknown"}")
-            
-            // Create insecure socket with timeout
-            val socket = withTimeoutOrNull(CONNECTION_TIMEOUT) {
-                try {
-                    device.createInsecureRfcommSocketToServiceRecord(SPP_UUID)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error creating insecure socket: ${e.message}", e)
-                    null
-                }
-            } ?: return false
-            
-            // Connect with timeout
-            val connected = withTimeoutOrNull(CONNECTION_TIMEOUT) {
-                try {
-                    // Cancel discovery before connecting
-                    bluetoothAdapter?.cancelDiscovery()
-                    
-                    socket.connect()
-                    true
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error connecting insecure socket: ${e.message}", e)
-                    try {
-                        socket.close()
-                    } catch (closeException: Exception) {
-                        Log.e(TAG, "Error closing insecure socket: ${closeException.message}", closeException)
-                    }
-                    false
-                }
-            } ?: false
-            
-            if (connected) {
-                this.socket = socket
-                
-                // Set up input and output streams
-                try {
-                    inputStream = socket.inputStream
-                    outputStream = socket.outputStream
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error getting streams: ${e.message}", e)
-                    try {
-                        socket.close()
-                    } catch (closeException: Exception) {
-                        Log.e(TAG, "Error closing socket: ${closeException.message}", closeException)
-                    }
-                    return false
-                }
-                
-                _connectionState.value = ConnectionState.CONNECTED
-                _error.value = null
-                
-                // Start listening for data
-                startListening()
-                
-                // Request device list
-                requestDevices()
-                
-                Log.d(TAG, "Successfully connected to ${device.name ?: "Unknown"} using insecure connection")
-                return true
-            }
-            
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in tryInsecureConnection: ${e.message}", e)
-            false
-        }
-    }
-    
-    private fun startListening() {
-        serviceScope.launch {
-            val buffer = ByteArray(1024)
             
             try {
-                while (_connectionState.value == ConnectionState.CONNECTED) {
-                    try {
-                        val stream = inputStream ?: throw IOException("Input stream is null")
+                val deviceAddress = gatt.device.address
+                
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    if (newState == BluetoothProfile.STATE_CONNECTED) {
+                        Log.d(TAG, "Connected to device: $deviceAddress")
+                        _connectionState.value = ConnectionState.CONNECTED
                         
-                        // Read with timeout
-                        val bytesRead = withTimeoutOrNull(5000) { // 5 second timeout
+                        // Discover services
+                        handler.post {
                             try {
-                                if (stream.available() > 0) {
-                                    stream.read(buffer)
-                                } else {
-                                    0 // No data available
-                                }
-                            } catch (e: IOException) {
-                                Log.e(TAG, "Error reading from stream: ${e.message}")
-                                -1 // Error
+                                gatt.discoverServices()
+                                Log.d(TAG, "Discovering services...")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error discovering services", e)
+                                disconnect()
                             }
-                        } ?: -1 // Timeout
-                        
-                        if (bytesRead > 0) {
-                            val data = String(buffer, 0, bytesRead)
-                            Log.d(TAG, "Received data: $data")
-                            
-                            // Process received data
-                            processReceivedData(data)
-                        } else if (bytesRead == -1) {
-                            // Error or end of stream
-                            Log.e(TAG, "End of stream or read error")
-                            break
                         }
-                        
-                        // Small delay to prevent tight loop
-                        kotlinx.coroutines.delay(100)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error in listening loop: ${e.message}")
-                        kotlinx.coroutines.delay(1000) // Wait before retrying
+                    } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                        Log.d(TAG, "Disconnected from device: $deviceAddress")
+                        _connectionState.value = ConnectionState.DISCONNECTED
+                        disconnect()
+                    }
+                } else {
+                    Log.e(TAG, "Connection state change failed with status: $status")
+                    _error.value = "Connection failed with status: $status"
+                    _connectionState.value = ConnectionState.DISCONNECTED
+                    disconnect()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in onConnectionStateChange", e)
+                _connectionState.value = ConnectionState.DISCONNECTED
+                disconnect()
+            }
+        }
+        
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (!hasBluetoothPermissions()) {
+                return
+            }
+            
+            try {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    Log.d(TAG, "Services discovered")
+                    
+                    // Find our service
+                    val service = gatt.getService(SMART_HOME_SERVICE_UUID)
+                    
+                    if (service == null) {
+                        Log.e(TAG, "Smart Home service not found")
+                        _error.value = "Smart Home service not found"
+                        disconnect()
+                        return
+                    }
+                    
+                    // Enable notifications for temperature and device list
+                    enableNotifications(gatt, service)
+                    
+                    // Read initial device list
+                    readDeviceList(gatt, service)
+                    
+                    // Read initial temperature
+                    readTemperature(gatt, service)
+                } else {
+                    Log.e(TAG, "Service discovery failed with status: $status")
+                    _error.value = "Service discovery failed"
+                    disconnect()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in onServicesDiscovered", e)
+                disconnect()
+            }
+        }
+        
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            if (!hasBluetoothPermissions()) {
+                return
+            }
+            
+            try {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    when (characteristic.uuid) {
+                        DEVICE_LIST_CHARACTERISTIC_UUID -> {
+                            val value = characteristic.value
+                            val jsonString = String(value)
+                            processDeviceListData(jsonString)
+                        }
+                        TEMPERATURE_CHARACTERISTIC_UUID -> {
+                            val value = characteristic.value
+                            val tempString = String(value)
+                            try {
+                                _temperature.value = tempString.toFloat()
+                                Log.d(TAG, "Temperature: ${_temperature.value}")
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error parsing temperature", e)
+                            }
+                        }
+                    }
+                } else {
+                    Log.e(TAG, "Characteristic read failed with status: $status")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in onCharacteristicRead", e)
+            }
+        }
+        
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic
+        ) {
+            if (!hasBluetoothPermissions()) {
+                return
+            }
+            
+            try {
+                when (characteristic.uuid) {
+                    DEVICE_LIST_CHARACTERISTIC_UUID -> {
+                        val value = characteristic.value
+                        val jsonString = String(value)
+                        processDeviceListData(jsonString)
+                    }
+                    TEMPERATURE_CHARACTERISTIC_UUID -> {
+                        val value = characteristic.value
+                        val tempString = String(value)
+                        try {
+                            _temperature.value = tempString.toFloat()
+                            Log.d(TAG, "Temperature updated: ${_temperature.value}")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error parsing temperature update", e)
+                        }
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Fatal error in listening thread: ${e.message}")
-            } finally {
-                // If we exit the loop, make sure we're disconnected
-                if (_connectionState.value == ConnectionState.CONNECTED) {
-                    disconnect()
+                Log.e(TAG, "Error in onCharacteristicChanged", e)
+            }
+        }
+        
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            if (!hasBluetoothPermissions()) {
+                return
+            }
+            
+            try {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    Log.d(TAG, "Descriptor write successful: ${descriptor.uuid}")
+                } else {
+                    Log.e(TAG, "Descriptor write failed with status: $status")
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in onDescriptorWrite", e)
             }
         }
     }
     
-    private fun processReceivedData(data: String) {
-        // In a real app, parse the JSON data and update the device list
-        // For this example, we'll just log it
-        Log.d(TAG, "Processing data: $data")
+    // Enable notifications for characteristics
+    private fun enableNotifications(gatt: BluetoothGatt, service: BluetoothGattService) {
+        try {
+            // Enable notifications for device list
+            val deviceListChar = service.getCharacteristic(DEVICE_LIST_CHARACTERISTIC_UUID)
+            if (deviceListChar != null) {
+                val success = gatt.setCharacteristicNotification(deviceListChar, true)
+                if (success) {
+                    val descriptor = deviceListChar.getDescriptor(CLIENT_CONFIG_DESCRIPTOR_UUID)
+                    if (descriptor != null) {
+                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        gatt.writeDescriptor(descriptor)
+                        Log.d(TAG, "Enabled notifications for device list")
+                    }
+                }
+            }
+            
+            // Enable notifications for temperature
+            val temperatureChar = service.getCharacteristic(TEMPERATURE_CHARACTERISTIC_UUID)
+            if (temperatureChar != null) {
+                val success = gatt.setCharacteristicNotification(temperatureChar, true)
+                if (success) {
+                    val descriptor = temperatureChar.getDescriptor(CLIENT_CONFIG_DESCRIPTOR_UUID)
+                    if (descriptor != null) {
+                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        gatt.writeDescriptor(descriptor)
+                        Log.d(TAG, "Enabled notifications for temperature")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error enabling notifications", e)
+        }
     }
     
-    suspend fun requestDevices(): Boolean = withContext(Dispatchers.IO) {
+    // Read device list
+    private fun readDeviceList(gatt: BluetoothGatt, service: BluetoothGattService) {
+        try {
+            val characteristic = service.getCharacteristic(DEVICE_LIST_CHARACTERISTIC_UUID)
+            if (characteristic != null) {
+                gatt.readCharacteristic(characteristic)
+                Log.d(TAG, "Reading device list")
+            } else {
+                Log.e(TAG, "Device list characteristic not found")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading device list", e)
+        }
+    }
+    
+    // Read temperature
+    private fun readTemperature(gatt: BluetoothGatt, service: BluetoothGattService) {
+        try {
+            val characteristic = service.getCharacteristic(TEMPERATURE_CHARACTERISTIC_UUID)
+            if (characteristic != null) {
+                gatt.readCharacteristic(characteristic)
+                Log.d(TAG, "Reading temperature")
+            } else {
+                Log.e(TAG, "Temperature characteristic not found")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reading temperature", e)
+        }
+    }
+    
+    // Process device list data
+    private fun processDeviceListData(jsonString: String) {
+        try {
+            val type = object : TypeToken<List<Device>>() {}.type
+            val deviceList: List<Device> = gson.fromJson(jsonString, type)
+            _devices.value = deviceList
+            Log.d(TAG, "Received device list: ${deviceList.size} devices")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing device list data", e)
+        }
+    }
+    
+    // Send device control command
+    suspend fun sendDeviceCommand(deviceId: String, action: String, value: String? = null): Boolean = withContext(Dispatchers.IO) {
         if (!hasBluetoothPermissions()) {
             _error.value = "Bluetooth permissions not granted"
             return@withContext false
         }
         
-        if (_connectionState.value != ConnectionState.CONNECTED) {
-            _error.value = "Not connected to phone"
+        if (_connectionState.value != ConnectionState.CONNECTED || bluetoothGatt == null) {
+            _error.value = "Not connected to device"
             return@withContext false
         }
         
         try {
-            // Send a command to request device list
-            val command = "{\"command\":\"getDevices\"}"
-            sendData(command)
+            val service = bluetoothGatt?.getService(SMART_HOME_SERVICE_UUID)
+            if (service == null) {
+                _error.value = "Smart Home service not found"
+                return@withContext false
+            }
             
-            // Simulate a delay for network request
-            kotlinx.coroutines.delay(500)
+            val characteristic = service.getCharacteristic(DEVICE_CONTROL_CHARACTERISTIC_UUID)
+            if (characteristic == null) {
+                _error.value = "Device control characteristic not found"
+                return@withContext false
+            }
             
-            return@withContext true
+            // Format the command
+            val command = if (value != null) {
+                "$action:$deviceId:$value"
+            } else {
+                "$action:$deviceId:"
+            }
+            
+            characteristic.value = command.toByteArray()
+            val success = bluetoothGatt?.writeCharacteristic(characteristic) ?: false
+            
+            if (success) {
+                Log.d(TAG, "Sent device command: $command")
+            } else {
+                Log.e(TAG, "Failed to send device command")
+                _error.value = "Failed to send device command"
+            }
+            
+            return@withContext success
         } catch (e: Exception) {
-            Log.e(TAG, "Error requesting devices: ${e.message}", e)
-            _error.value = "Error requesting devices: ${e.message}"
+            Log.e(TAG, "Error sending device command", e)
+            _error.value = "Error sending device command: ${e.message}"
             return@withContext false
         }
     }
     
-    private suspend fun sendData(data: String): Boolean = withContext(Dispatchers.IO) {
-        if (_connectionState.value != ConnectionState.CONNECTED) {
-            return@withContext false
-        }
-        
-        try {
-            val stream = outputStream ?: throw IOException("Output stream is null")
-            stream.write(data.toByteArray())
-            stream.flush() // Ensure data is sent immediately
-            Log.d(TAG, "Sent: $data")
-            return@withContext true
-        } catch (e: Exception) {
-            Log.e(TAG, "Error sending data: ${e.message}")
-            disconnect()
-            return@withContext false
-        }
+    // Toggle device
+    suspend fun toggleDevice(deviceId: String): Boolean {
+        return sendDeviceCommand(deviceId, "TOGGLE")
+    }
+    
+    // Set device value
+    suspend fun setDeviceValue(deviceId: String, value: String): Boolean {
+        return sendDeviceCommand(deviceId, "SET", value)
     }
     
     fun disconnect() {
-        try {
-            // Close streams first
-            try {
-                inputStream?.close()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error closing input stream: ${e.message}")
-            }
-            
-            try {
-                outputStream?.close()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error closing output stream: ${e.message}")
-            }
-            
-            // Then close socket
-            try {
-                socket?.close()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error closing socket: ${e.message}")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error during disconnect: ${e.message}")
-        } finally {
-            socket = null
-            inputStream = null
-            outputStream = null
-            _connectionState.value = ConnectionState.DISCONNECTED
-        }
-    }
-    
-    suspend fun sendCommand(deviceId: String, command: String): Boolean = withContext(Dispatchers.IO) {
-        if (_connectionState.value != ConnectionState.CONNECTED) {
-            _error.value = "Not connected to phone"
-            return@withContext false
+        if (!hasBluetoothPermissions()) {
+            return
         }
         
-        try {
-            // Format the command as JSON
-            val jsonCommand = "{\"command\":\"$command\",\"deviceId\":\"$deviceId\"}"
-            return@withContext sendData(jsonCommand)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error sending command: ${e.message}", e)
-            _error.value = "Error sending command: ${e.message}"
-            return@withContext false
-        }
-    }
-    
-    fun toggleDevice(deviceId: String) {
-        // Update local state immediately for responsive UI
-        val devices = _devices.value.toMutableList()
-        val deviceIndex = devices.indexOfFirst { it.id == deviceId }
-        
-        if (deviceIndex != -1) {
-            val device = devices[deviceIndex]
-            devices[deviceIndex] = device.copy(isOn = !device.isOn)
-            _devices.value = devices
-            
-            // Send command to phone
-            serviceScope.launch {
-                sendCommand(deviceId, "TOGGLE")
+        coroutineScope.launch {
+            try {
+                bluetoothGatt?.close()
+                bluetoothGatt = null
+                _connectionState.value = ConnectionState.DISCONNECTED
+                Log.d(TAG, "Disconnected from device")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error disconnecting", e)
             }
         }
     }
     
-    fun setDeviceValue(deviceId: String, value: Int) {
-        // Update local state immediately for responsive UI
-        val devices = _devices.value.toMutableList()
-        val deviceIndex = devices.indexOfFirst { it.id == deviceId }
-        
-        if (deviceIndex != -1) {
-            val device = devices[deviceIndex]
-            devices[deviceIndex] = device.copy(value = value.toString())
-            _devices.value = devices
-            
-            // Send command to phone
-            serviceScope.launch {
-                sendCommand(deviceId, "VALUE:$value")
-            }
-        }
+    // Clean up resources
+    fun cleanup() {
+        stopScan()
+        disconnect()
+        handler.removeCallbacksAndMessages(null)
     }
-    
-    fun executeQuickAction(actionId: String): Boolean {
-        // In a real app, you'd have logic to execute the quick action
-        // For this example, we'll just return true
-        return true
-    }
-    
-    enum class ConnectionState {
-        CONNECTED, CONNECTING, DISCONNECTED
-    }
-    
-    data class BluetoothStatus(
-        val isAvailable: Boolean,
-        val isEnabled: Boolean,
-        val pairedDevices: Int,
-        val connectedDevices: Int
-    )
-    
-    data class Device(
-        val id: String,
-        val name: String,
-        val type: String,
-        val roomId: String,
-        val isOn: Boolean,
-        val value: String?
-    )
 }

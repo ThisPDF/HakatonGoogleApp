@@ -15,6 +15,8 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.example.smarthome.data.Device
+import com.google.gson.Gson
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,144 +24,182 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.*
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class BluetoothGattServerService @Inject constructor(
-    @ApplicationContext private val context: Context,
-    private val bluetoothManager: BluetoothManager
+    @ApplicationContext private val context: Context
 ) {
-    private val TAG = "GattServerService"
+    private val TAG = "BluetoothGattServer"
     
-    // Service and characteristic UUIDs
+    // Define UUIDs for services and characteristics
     companion object {
         // Service UUIDs
-        val SERVICE_UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
+        val SMART_HOME_SERVICE_UUID = UUID.fromString("4fafc201-1fb5-459e-8fcc-c5c9c331914b")
         
         // Characteristic UUIDs
-        val LED_CONTROL_CHARACTERISTIC_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
-        val TEMPERATURE_CHARACTERISTIC_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a9")
+        val DEVICE_LIST_CHARACTERISTIC_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a8")
+        val DEVICE_CONTROL_CHARACTERISTIC_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26a9")
+        val TEMPERATURE_CHARACTERISTIC_UUID = UUID.fromString("beb5483e-36e1-4688-b7f5-ea07361b26aa")
         
         // Descriptor UUIDs
         val CLIENT_CONFIG_DESCRIPTOR_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
     
-    // State flows for temperature and connection status
-    private val _temperatureData = MutableStateFlow<Float?>(null)
-    val temperatureData: StateFlow<Float?> = _temperatureData.asStateFlow()
-    
+    // State flows for observing data
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
     
-    private val _ledState = MutableStateFlow(false)
-    val ledState: StateFlow<Boolean> = _ledState.asStateFlow()
+    private val _connectedDeviceName = MutableStateFlow<String?>(null)
+    val connectedDeviceName: StateFlow<String?> = _connectedDeviceName.asStateFlow()
+    
+    private val _temperature = MutableStateFlow(22.0f)
+    val temperature: StateFlow<Float> = _temperature.asStateFlow()
     
     // Bluetooth objects
+    private val bluetoothManager by lazy {
+        context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+    }
+    
+    private val bluetoothAdapter by lazy {
+        bluetoothManager.adapter
+    }
+    
     private var bluetoothGattServer: BluetoothGattServer? = null
     private var bluetoothLeAdvertiser: BluetoothLeAdvertiser? = null
     private val connectedDevices = mutableListOf<BluetoothDevice>()
     
-    // Background thread for BLE operations
-    private var bleHandlerThread = HandlerThread("BLEThread")
+    // Thread management
+    private var bleThread: HandlerThread? = null
     private var bleHandler: Handler? = null
-    private var mainHandler = Handler(Looper.getMainLooper())
-    private val coroutineScope = CoroutineScope(Dispatchers.IO)
-    
-    // Thread state tracking
-    private var isThreadActive = false
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val threadLock = Object()
+    private var isThreadActive = false
+    
+    // JSON serialization
+    private val gson = Gson()
+    private val coroutineScope = CoroutineScope(Dispatchers.IO)
     
     init {
         Log.d(TAG, "Initializing BluetoothGattServerService")
-        initializeHandlerThread()
+        initializeBluetoothThread()
     }
     
-    private fun initializeHandlerThread() {
+    private fun initializeBluetoothThread() {
         synchronized(threadLock) {
+            Log.d(TAG, "Initializing Bluetooth thread")
             try {
-                Log.d(TAG, "Starting BLE handler thread")
-                bleHandlerThread.start()
-                bleHandler = Handler(bleHandlerThread.looper)
+                if (bleThread?.isAlive == true) {
+                    Log.d(TAG, "BLE thread is already alive, joining...")
+                    bleThread?.quitSafely()
+                    bleThread?.join(1000)
+                }
+                
+                val threadId = UUID.randomUUID().toString().substring(0, 8)
+                bleThread = HandlerThread("BleThread-$threadId").apply { 
+                    start()
+                    Log.d(TAG, "BLE thread started: ${this.name}")
+                }
+                bleHandler = Handler(bleThread!!.looper)
                 isThreadActive = true
-                Log.d(TAG, "BLE handler thread started successfully: ${bleHandlerThread.name}, state: ${bleHandlerThread.state}")
+                Log.d(TAG, "BLE thread initialized successfully")
             } catch (e: Exception) {
-                Log.e(TAG, "Error initializing BLE handler thread", e)
+                Log.e(TAG, "Failed to initialize Bluetooth thread", e)
                 isThreadActive = false
+                bleThread = null
+                bleHandler = null
             }
         }
     }
-
-    // First, add a method to check for Bluetooth permissions
+    
+    private fun postToHandler(runnable: Runnable) {
+        synchronized(threadLock) {
+            if (!isThreadActive || bleHandler == null) {
+                Log.w(TAG, "BLE thread is not active, reinitializing...")
+                initializeBluetoothThread()
+            }
+            
+            try {
+                bleHandler?.post(runnable) ?: mainHandler.post(runnable)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to post to handler", e)
+                mainHandler.post(runnable)
+            }
+        }
+    }
+    
+    private fun postDelayedToHandler(runnable: Runnable, delayMillis: Long) {
+        synchronized(threadLock) {
+            if (!isThreadActive || bleHandler == null) {
+                Log.w(TAG, "BLE thread is not active for delayed post, reinitializing...")
+                initializeBluetoothThread()
+            }
+            
+            try {
+                bleHandler?.postDelayed(runnable, delayMillis) ?: mainHandler.postDelayed(runnable, delayMillis)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to post delayed to handler", e)
+                mainHandler.postDelayed(runnable, delayMillis)
+            }
+        }
+    }
+    
     private fun hasBluetoothPermissions(): Boolean {
-        val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_ADVERTISE
             ) == PackageManager.PERMISSION_GRANTED
         } else {
             ContextCompat.checkSelfPermission(
                 context,
                 Manifest.permission.BLUETOOTH
+            ) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_ADMIN
             ) == PackageManager.PERMISSION_GRANTED
         }
-        
-        Log.d(TAG, "Bluetooth permissions check: $hasPermission")
-        return hasPermission
     }
     
-    // Safe way to post to the handler
-    private fun postToHandler(runnable: Runnable): Boolean {
-        synchronized(threadLock) {
-            val handler = bleHandler
-            if (handler != null && isThreadActive && bleHandlerThread.isAlive) {
-                Log.d(TAG, "Posting to BLE handler thread: ${bleHandlerThread.name}, state: ${bleHandlerThread.state}")
-                return handler.post(runnable)
-            } else {
-                Log.e(TAG, "Cannot post to BLE handler thread - thread is not active or handler is null. Thread alive: ${bleHandlerThread.isAlive}, Handler null: ${handler == null}")
-                return false
-            }
-        }
-    }
-    
-    // Safe way to post delayed to the handler
-    private fun postDelayedToHandler(runnable: Runnable, delayMillis: Long): Boolean {
-        synchronized(threadLock) {
-            val handler = bleHandler
-            if (handler != null && isThreadActive && bleHandlerThread.isAlive) {
-                Log.d(TAG, "Posting delayed task to BLE handler thread")
-                return handler.postDelayed(runnable, delayMillis)
-            } else {
-                Log.e(TAG, "Cannot post delayed task to BLE handler thread - thread is not active or handler is null")
-                return false
-            }
-        }
-    }
-    
-    // Callback for GATT server events
+    // GATT Server Callback
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             Log.d(TAG, "onConnectionStateChange: device=${device.address}, status=$status, newState=$newState")
             
             if (!hasBluetoothPermissions()) {
-                Log.e(TAG, "Bluetooth permissions not granted")
+                Log.e(TAG, "Missing Bluetooth permissions")
                 return
             }
             
-            if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.i(TAG, "Device connected: ${device.address}")
-                synchronized(connectedDevices) {
-                    connectedDevices.add(device)
+            try {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    synchronized(connectedDevices) {
+                        if (!connectedDevices.contains(device)) {
+                            connectedDevices.add(device)
+                        }
+                    }
+                    _isConnected.value = true
+                    _connectedDeviceName.value = device.name ?: "Unknown Device"
+                    Log.d(TAG, "Device connected: ${device.name ?: "Unknown"} (${device.address})")
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    synchronized(connectedDevices) {
+                        connectedDevices.remove(device)
+                    }
+                    if (connectedDevices.isEmpty()) {
+                        _isConnected.value = false
+                        _connectedDeviceName.value = null
+                    }
+                    Log.d(TAG, "Device disconnected: ${device.name ?: "Unknown"} (${device.address})")
                 }
-                _isConnected.value = true
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                Log.i(TAG, "Device disconnected: ${device.address}")
-                synchronized(connectedDevices) {
-                    connectedDevices.remove(device)
-                }
-                _isConnected.value = connectedDevices.isNotEmpty()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in onConnectionStateChange", e)
             }
         }
         
@@ -169,55 +209,38 @@ class BluetoothGattServerService @Inject constructor(
             offset: Int,
             characteristic: BluetoothGattCharacteristic
         ) {
-            Log.d(TAG, "onCharacteristicReadRequest: device=${device.address}, requestId=$requestId, characteristic=${characteristic.uuid}")
+            Log.d(TAG, "onCharacteristicReadRequest: device=${device.address}, characteristic=${characteristic.uuid}")
             
             if (!hasBluetoothPermissions()) {
-                Log.e(TAG, "Bluetooth permissions not granted")
-                try {
-                    bluetoothGattServer?.sendResponse(
-                        device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                    )
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error sending failure response", e)
-                }
+                Log.e(TAG, "Missing Bluetooth permissions")
+                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 return
             }
             
             try {
                 when (characteristic.uuid) {
-                    LED_CONTROL_CHARACTERISTIC_UUID -> {
-                        val value = byteArrayOf(if (_ledState.value) 1 else 0)
-                        Log.d(TAG, "Sending LED state response: ${_ledState.value}")
-                        bluetoothGattServer?.sendResponse(
-                            device, requestId, BluetoothGatt.GATT_SUCCESS, 0, value
-                        )
-                        Log.i(TAG, "LED state read: ${_ledState.value}")
+                    DEVICE_LIST_CHARACTERISTIC_UUID -> {
+                        // Send the device list as JSON
+                        val deviceList = getDeviceList()
+                        val jsonData = gson.toJson(deviceList)
+                        val value = jsonData.toByteArray()
+                        bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                        Log.d(TAG, "Sent device list: ${deviceList.size} devices")
                     }
                     TEMPERATURE_CHARACTERISTIC_UUID -> {
-                        val temperature = _temperatureData.value ?: 0f
-                        val value = temperature.toString().toByteArray()
-                        Log.d(TAG, "Sending temperature response: $temperature")
-                        bluetoothGattServer?.sendResponse(
-                            device, requestId, BluetoothGatt.GATT_SUCCESS, 0, value
-                        )
-                        Log.i(TAG, "Temperature read: $temperature")
+                        // Send the current temperature
+                        val value = _temperature.value.toString().toByteArray()
+                        bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
+                        Log.d(TAG, "Sent temperature: ${_temperature.value}")
                     }
                     else -> {
-                        Log.d(TAG, "Unknown characteristic read request: ${characteristic.uuid}")
-                        bluetoothGattServer?.sendResponse(
-                            device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                        )
+                        bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
+                        Log.w(TAG, "Read request for unknown characteristic: ${characteristic.uuid}")
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error processing characteristic read request", e)
-                try {
-                    bluetoothGattServer?.sendResponse(
-                        device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                    )
-                } catch (e2: Exception) {
-                    Log.e(TAG, "Error sending failure response", e2)
-                }
+                Log.e(TAG, "Error in onCharacteristicReadRequest", e)
+                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
             }
         }
         
@@ -230,74 +253,39 @@ class BluetoothGattServerService @Inject constructor(
             offset: Int,
             value: ByteArray
         ) {
-            Log.d(TAG, "onCharacteristicWriteRequest: device=${device.address}, requestId=$requestId, characteristic=${characteristic.uuid}")
+            Log.d(TAG, "onCharacteristicWriteRequest: device=${device.address}, characteristic=${characteristic.uuid}")
             
             if (!hasBluetoothPermissions()) {
-                Log.e(TAG, "Bluetooth permissions not granted")
+                Log.e(TAG, "Missing Bluetooth permissions")
                 if (responseNeeded) {
-                    try {
-                        bluetoothGattServer?.sendResponse(
-                            device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                        )
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error sending failure response", e)
-                    }
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 }
                 return
             }
             
             try {
                 when (characteristic.uuid) {
-                    LED_CONTROL_CHARACTERISTIC_UUID -> {
-                        if (value.isNotEmpty()) {
-                            val ledOn = value[0] != 0.toByte()
-                            _ledState.value = ledOn
-                            Log.i(TAG, "LED state changed to: $ledOn")
-                        }
+                    DEVICE_CONTROL_CHARACTERISTIC_UUID -> {
+                        // Process device control command
+                        val command = String(value)
+                        Log.d(TAG, "Received device control command: $command")
+                        processDeviceCommand(command)
                         
                         if (responseNeeded) {
-                            bluetoothGattServer?.sendResponse(
-                                device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null
-                            )
-                        }
-                    }
-                    TEMPERATURE_CHARACTERISTIC_UUID -> {
-                        if (value.isNotEmpty()) {
-                            try {
-                                val temperatureString = String(value)
-                                val temperature = temperatureString.toFloat()
-                                _temperatureData.value = temperature
-                                Log.i(TAG, "Temperature updated: $temperature")
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error parsing temperature data", e)
-                            }
-                        }
-                        
-                        if (responseNeeded) {
-                            bluetoothGattServer?.sendResponse(
-                                device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null
-                            )
+                            bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                         }
                     }
                     else -> {
-                        Log.d(TAG, "Unknown characteristic write request: ${characteristic.uuid}")
                         if (responseNeeded) {
-                            bluetoothGattServer?.sendResponse(
-                                device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                            )
+                            bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                         }
+                        Log.w(TAG, "Write request for unknown characteristic: ${characteristic.uuid}")
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error processing characteristic write request", e)
+                Log.e(TAG, "Error in onCharacteristicWriteRequest", e)
                 if (responseNeeded) {
-                    try {
-                        bluetoothGattServer?.sendResponse(
-                            device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                        )
-                    } catch (e2: Exception) {
-                        Log.e(TAG, "Error sending failure response", e2)
-                    }
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 }
             }
         }
@@ -308,41 +296,24 @@ class BluetoothGattServerService @Inject constructor(
             offset: Int,
             descriptor: BluetoothGattDescriptor
         ) {
-            Log.d(TAG, "onDescriptorReadRequest: device=${device.address}, requestId=$requestId, descriptor=${descriptor.uuid}")
+            Log.d(TAG, "onDescriptorReadRequest: device=${device.address}, descriptor=${descriptor.uuid}")
             
             if (!hasBluetoothPermissions()) {
-                Log.e(TAG, "Bluetooth permissions not granted")
-                try {
-                    bluetoothGattServer?.sendResponse(
-                        device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                    )
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error sending failure response", e)
-                }
+                Log.e(TAG, "Missing Bluetooth permissions")
+                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 return
             }
             
             try {
                 if (descriptor.uuid == CLIENT_CONFIG_DESCRIPTOR_UUID) {
                     val value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    bluetoothGattServer?.sendResponse(
-                        device, requestId, BluetoothGatt.GATT_SUCCESS, 0, value
-                    )
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, value)
                 } else {
-                    Log.d(TAG, "Unknown descriptor read request: ${descriptor.uuid}")
-                    bluetoothGattServer?.sendResponse(
-                        device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                    )
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error processing descriptor read request", e)
-                try {
-                    bluetoothGattServer?.sendResponse(
-                        device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                    )
-                } catch (e2: Exception) {
-                    Log.e(TAG, "Error sending failure response", e2)
-                }
+                Log.e(TAG, "Error in onDescriptorReadRequest", e)
+                bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
             }
         }
         
@@ -355,398 +326,403 @@ class BluetoothGattServerService @Inject constructor(
             offset: Int,
             value: ByteArray
         ) {
-            Log.d(TAG, "onDescriptorWriteRequest: device=${device.address}, requestId=$requestId, descriptor=${descriptor.uuid}")
+            Log.d(TAG, "onDescriptorWriteRequest: device=${device.address}, descriptor=${descriptor.uuid}")
             
             if (!hasBluetoothPermissions()) {
-                Log.e(TAG, "Bluetooth permissions not granted")
+                Log.e(TAG, "Missing Bluetooth permissions")
                 if (responseNeeded) {
-                    try {
-                        bluetoothGattServer?.sendResponse(
-                            device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                        )
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error sending failure response", e)
-                    }
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 }
                 return
             }
             
             try {
                 if (descriptor.uuid == CLIENT_CONFIG_DESCRIPTOR_UUID) {
-                    // Handle notification/indication subscription
+                    // Client is subscribing to notifications
                     if (responseNeeded) {
-                        bluetoothGattServer?.sendResponse(
-                            device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null
-                        )
+                        bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null)
                     }
-                } else if (responseNeeded) {
-                    Log.d(TAG, "Unknown descriptor write request: ${descriptor.uuid}")
-                    bluetoothGattServer?.sendResponse(
-                        device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                    )
+                    Log.d(TAG, "Client subscribed to notifications")
+                } else {
+                    if (responseNeeded) {
+                        bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
+                    }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error processing descriptor write request", e)
+                Log.e(TAG, "Error in onDescriptorWriteRequest", e)
                 if (responseNeeded) {
-                    try {
-                        bluetoothGattServer?.sendResponse(
-                            device, requestId, BluetoothGatt.GATT_FAILURE, 0, null
-                        )
-                    } catch (e2: Exception) {
-                        Log.e(TAG, "Error sending failure response", e2)
-                    }
+                    bluetoothGattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, 0, null)
                 }
             }
         }
     }
     
-    // Callback for BLE advertising
+    // Advertising callback
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-            Log.i(TAG, "BLE advertising started successfully")
+            Log.d(TAG, "BLE Advertising started successfully")
         }
         
         override fun onStartFailure(errorCode: Int) {
-            Log.e(TAG, "BLE advertising failed with error code: $errorCode")
-            // Try to restart advertising with simpler settings after a delay
-            val runnable = Runnable {
-                startAdvertisingWithSimpleSettings()
-            }
+            Log.e(TAG, "BLE Advertising failed to start with error code: $errorCode")
             
-            if (!postDelayedToHandler(runnable, 2000)) {
-                // If posting to handler failed, try on main thread
-                Log.d(TAG, "Posting to main thread instead")
-                mainHandler.postDelayed(runnable, 2000)
-            }
+            // Try with simpler settings after a delay
+            postDelayedToHandler({
+                startAdvertisingWithSimpleSettings()
+            }, 2000)
         }
     }
     
-    // Start the GATT server and begin advertising
+    // Start the GATT server
     fun startServer() {
-        Log.d(TAG, "startServer() called")
+        Log.d(TAG, "Starting GATT server")
         
-        // Check if thread is active, if not reinitialize
-        synchronized(threadLock) {
-            if (!isThreadActive || !bleHandlerThread.isAlive) {
-                Log.d(TAG, "BLE thread is not active, reinitializing")
-                if (bleHandlerThread.state == Thread.State.TERMINATED) {
-                    Log.d(TAG, "BLE thread was terminated, creating a new one")
-                    val newThread = HandlerThread("BLEThread-${UUID.randomUUID()}")
-                    bleHandlerThread.quitSafely()
-                    bleHandlerThread.join(1000) // Wait for old thread to finish
-                    bleHandlerThread = newThread
-                }
-                initializeHandlerThread()
-            }
+        if (!hasBluetoothPermissions()) {
+            Log.e(TAG, "Missing Bluetooth permissions")
+            return
         }
         
-        // Run on background thread
-        val runnable = Runnable {
+        postToHandler {
             try {
-                // Check for permissions first
-                if (!hasBluetoothPermissions()) {
-                    Log.e(TAG, "Cannot start GATT server: Bluetooth permissions not granted")
-                    return@Runnable
-                }
-            
-                val bluetoothAdapter = bluetoothManager.adapter
-                
-                if (bluetoothAdapter == null) {
-                    Log.e(TAG, "Bluetooth adapter is null")
-                    return@Runnable
-                }
-                
-                if (!bluetoothAdapter.isEnabled) {
-                    Log.e(TAG, "Bluetooth is not enabled")
-                    return@Runnable
-                }
-                
-                Log.d(TAG, "Opening GATT server")
                 // Initialize the GATT server
                 bluetoothGattServer = bluetoothManager.openGattServer(context, gattServerCallback)
                 
                 if (bluetoothGattServer == null) {
                     Log.e(TAG, "Failed to open GATT server")
-                    return@Runnable
+                    return@postToHandler
                 }
                 
                 // Create the service
-                val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
+                val service = BluetoothGattService(SMART_HOME_SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
                 
-                // Create LED control characteristic
-                val ledControlCharacteristic = BluetoothGattCharacteristic(
-                    LED_CONTROL_CHARACTERISTIC_UUID,
-                    BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE,
-                    BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE
+                // Create device list characteristic
+                val deviceListCharacteristic = BluetoothGattCharacteristic(
+                    DEVICE_LIST_CHARACTERISTIC_UUID,
+                    BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+                    BluetoothGattCharacteristic.PERMISSION_READ
+                )
+                
+                // Create device control characteristic
+                val deviceControlCharacteristic = BluetoothGattCharacteristic(
+                    DEVICE_CONTROL_CHARACTERISTIC_UUID,
+                    BluetoothGattCharacteristic.PROPERTY_WRITE,
+                    BluetoothGattCharacteristic.PERMISSION_WRITE
                 )
                 
                 // Create temperature characteristic
                 val temperatureCharacteristic = BluetoothGattCharacteristic(
                     TEMPERATURE_CHARACTERISTIC_UUID,
-                    BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE or
-                            BluetoothGattCharacteristic.PROPERTY_NOTIFY,
-                    BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE
+                    BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
+                    BluetoothGattCharacteristic.PERMISSION_READ
                 )
                 
-                // Add client config descriptor to temperature characteristic
-                val clientConfigDescriptor = BluetoothGattDescriptor(
+                // Add client config descriptor to characteristics that support notifications
+                val deviceListDescriptor = BluetoothGattDescriptor(
                     CLIENT_CONFIG_DESCRIPTOR_UUID,
                     BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
                 )
-                temperatureCharacteristic.addDescriptor(clientConfigDescriptor)
+                deviceListCharacteristic.addDescriptor(deviceListDescriptor)
+                
+                val temperatureDescriptor = BluetoothGattDescriptor(
+                    CLIENT_CONFIG_DESCRIPTOR_UUID,
+                    BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
+                )
+                temperatureCharacteristic.addDescriptor(temperatureDescriptor)
                 
                 // Add characteristics to service
-                service.addCharacteristic(ledControlCharacteristic)
+                service.addCharacteristic(deviceListCharacteristic)
+                service.addCharacteristic(deviceControlCharacteristic)
                 service.addCharacteristic(temperatureCharacteristic)
                 
                 // Add service to GATT server
-                val success = bluetoothGattServer?.addService(service)
-                Log.d(TAG, "Add service result: $success")
+                val success = bluetoothGattServer?.addService(service) ?: false
                 
-                // Start advertising
-                startAdvertising()
-                
-                Log.i(TAG, "GATT server started")
+                if (success) {
+                    Log.d(TAG, "Service added successfully")
+                    // Start advertising
+                    startAdvertising()
+                    
+                    // Start simulating temperature changes
+                    simulateTemperatureChanges()
+                } else {
+                    Log.e(TAG, "Failed to add service")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting GATT server", e)
             }
-        }
-        
-        if (!postToHandler(runnable)) {
-            // If posting to handler failed, try on main thread
-            Log.d(TAG, "Posting startServer to main thread instead")
-            mainHandler.post(runnable)
-        }
-    }
-    
-    // Stop the GATT server and advertising
-    fun stopServer() {
-        Log.d(TAG, "stopServer() called")
-        
-        val runnable = Runnable {
-            try {
-                Log.d(TAG, "Stopping advertising")
-                stopAdvertising()
-                
-                Log.d(TAG, "Clearing connected devices")
-                synchronized(connectedDevices) {
-                    connectedDevices.clear()
-                }
-                _isConnected.value = false
-                
-                Log.d(TAG, "Closing GATT server")
-                bluetoothGattServer?.close()
-                bluetoothGattServer = null
-                
-                Log.i(TAG, "GATT server stopped")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error stopping GATT server", e)
-            }
-        }
-        
-        if (!postToHandler(runnable)) {
-            // If posting to handler failed, try on main thread
-            Log.d(TAG, "Posting stopServer to main thread instead")
-            mainHandler.post(runnable)
         }
     }
     
     // Start BLE advertising
     private fun startAdvertising() {
-        Log.d(TAG, "startAdvertising() called")
+        if (!hasBluetoothPermissions()) {
+            Log.e(TAG, "Missing Bluetooth permissions")
+            return
+        }
+        
         try {
-            val bluetoothAdapter = bluetoothManager.adapter
             bluetoothLeAdvertiser = bluetoothAdapter.bluetoothLeAdvertiser
             
             if (bluetoothLeAdvertiser == null) {
-                Log.e(TAG, "BLE advertising not supported")
+                Log.e(TAG, "Bluetooth LE advertising not supported")
                 return
             }
             
             val settings = AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
                 .setConnectable(true)
-                .setTimeout(0)
+                .setTimeout(0) // No timeout
                 .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
                 .build()
             
-            // Simplified advertising data - minimal data to reduce chances of failure
             val data = AdvertiseData.Builder()
-                .setIncludeDeviceName(false) // Don't include device name to reduce packet size
-                .addServiceUuid(ParcelUuid(SERVICE_UUID))
+                .setIncludeDeviceName(true)
+                .addServiceUuid(ParcelUuid(SMART_HOME_SERVICE_UUID))
                 .build()
             
-            Log.d(TAG, "Starting BLE advertising")
             bluetoothLeAdvertiser?.startAdvertising(settings, data, advertiseCallback)
+            Log.d(TAG, "Started BLE advertising")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start advertising", e)
         }
     }
     
-    // Start advertising with even simpler settings as a fallback
+    // Start advertising with simpler settings as a fallback
     private fun startAdvertisingWithSimpleSettings() {
-        Log.d(TAG, "startAdvertisingWithSimpleSettings() called")
+        if (!hasBluetoothPermissions()) {
+            Log.e(TAG, "Missing Bluetooth permissions")
+            return
+        }
+        
         try {
-            val bluetoothAdapter = bluetoothManager.adapter
             bluetoothLeAdvertiser = bluetoothAdapter.bluetoothLeAdvertiser
             
             if (bluetoothLeAdvertiser == null) {
-                Log.e(TAG, "BLE advertising not supported")
+                Log.e(TAG, "Bluetooth LE advertising not supported")
                 return
             }
             
-            // Use the most basic settings
             val settings = AdvertiseSettings.Builder()
-                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER) // Use low power mode
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
                 .setConnectable(true)
                 .setTimeout(0)
-                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_LOW) // Use low power
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
                 .build()
             
-            // Minimal advertising data
             val data = AdvertiseData.Builder()
-                .setIncludeDeviceName(false)
-                .addServiceUuid(ParcelUuid(SERVICE_UUID))
+                .setIncludeDeviceName(false) // Don't include device name to reduce packet size
+                .addServiceUuid(ParcelUuid(SMART_HOME_SERVICE_UUID))
                 .build()
             
-            Log.d(TAG, "Starting BLE advertising with simple settings")
             bluetoothLeAdvertiser?.startAdvertising(settings, data, advertiseCallback)
+            Log.d(TAG, "Started BLE advertising with simple settings")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start advertising with simple settings", e)
         }
     }
     
-    // Stop BLE advertising
+    // Stop advertising
     private fun stopAdvertising() {
-        Log.d(TAG, "stopAdvertising() called")
         try {
             bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
             bluetoothLeAdvertiser = null
+            Log.d(TAG, "Stopped BLE advertising")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping advertising", e)
         }
     }
     
-    // Update LED state and notify connected devices
-    fun setLedState(on: Boolean) {
-        Log.d(TAG, "setLedState() called with: on=$on")
-        _ledState.value = on
+    // Stop the GATT server
+    fun stopServer() {
+        Log.d(TAG, "Stopping GATT server")
         
-        // Check permissions before notifying connected devices
-        if (!hasBluetoothPermissions()) {
-            Log.e(TAG, "Cannot notify LED state change: Bluetooth permissions not granted")
-            return
-        }
-        
-        // Notify connected devices about the LED state change
-        val runnable = Runnable {
+        postToHandler {
             try {
-                val service = bluetoothGattServer?.getService(SERVICE_UUID)
-                val characteristic = service?.getCharacteristic(LED_CONTROL_CHARACTERISTIC_UUID)
-                
-                if (characteristic != null) {
-                    characteristic.value = byteArrayOf(if (on) 1 else 0)
-                    synchronized(connectedDevices) {
-                        Log.d(TAG, "Notifying ${connectedDevices.size} devices about LED state change")
-                        for (device in connectedDevices) {
-                            try {
-                                bluetoothGattServer?.notifyCharacteristicChanged(device, characteristic, false)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error notifying device ${device.address}", e)
-                            }
-                        }
-                    }
-                } else {
-                    Log.e(TAG, "LED characteristic not found")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error notifying LED state change", e)
-            }
-        }
-        
-        if (!postToHandler(runnable)) {
-            // If posting to handler failed, try on main thread
-            Log.d(TAG, "Posting setLedState to main thread instead")
-            mainHandler.post(runnable)
-        }
-    }
-    
-    // Update temperature data
-    fun updateTemperature(temperature: Float) {
-        Log.d(TAG, "updateTemperature() called with: temperature=$temperature")
-        _temperatureData.value = temperature
-        
-        // Check permissions before notifying connected devices
-        if (!hasBluetoothPermissions()) {
-            Log.e(TAG, "Cannot notify temperature change: Bluetooth permissions not granted")
-            return
-        }
-        
-        // Notify connected devices about temperature change
-        val runnable = Runnable {
-            try {
-                val service = bluetoothGattServer?.getService(SERVICE_UUID)
-                val characteristic = service?.getCharacteristic(TEMPERATURE_CHARACTERISTIC_UUID)
-                
-                if (characteristic != null) {
-                    characteristic.value = temperature.toString().toByteArray()
-                    synchronized(connectedDevices) {
-                        Log.d(TAG, "Notifying ${connectedDevices.size} devices about temperature change")
-                        for (device in connectedDevices) {
-                            try {
-                                bluetoothGattServer?.notifyCharacteristicChanged(device, characteristic, false)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error notifying device ${device.address}", e)
-                            }
-                        }
-                    }
-                } else {
-                    Log.e(TAG, "Temperature characteristic not found")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error notifying temperature change", e)
-            }
-        }
-        
-        if (!postToHandler(runnable)) {
-            // If posting to handler failed, try on main thread
-            Log.d(TAG, "Posting updateTemperature to main thread instead")
-            mainHandler.post(runnable)
-        }
-    }
-    
-    // Clean up resources
-    fun cleanup() {
-        Log.d(TAG, "cleanup() called")
-        
-        // First stop the server on the main thread to ensure it completes
-        mainHandler.post {
-            try {
-                Log.d(TAG, "Stopping server from cleanup")
                 stopAdvertising()
                 
                 synchronized(connectedDevices) {
                     connectedDevices.clear()
                 }
                 _isConnected.value = false
+                _connectedDeviceName.value = null
                 
                 bluetoothGattServer?.close()
                 bluetoothGattServer = null
+                
+                Log.d(TAG, "GATT server stopped")
             } catch (e: Exception) {
-                Log.e(TAG, "Error in cleanup stopping server", e)
+                Log.e(TAG, "Error stopping GATT server", e)
+            }
+        }
+    }
+    
+    // Simulate temperature changes
+    private fun simulateTemperatureChanges() {
+        postDelayedToHandler({
+            // Update temperature with a small random change
+            val newTemp = _temperature.value + (-0.5f..0.5f).random()
+            _temperature.value = newTemp.coerceIn(18f, 30f)
+            
+            // Notify connected devices
+            notifyTemperatureChanged()
+            
+            // Schedule next update
+            simulateTemperatureChanges()
+        }, 5000) // Update every 5 seconds
+    }
+    
+    // Notify connected devices about temperature changes
+    private fun notifyTemperatureChanged() {
+        if (!hasBluetoothPermissions() || bluetoothGattServer == null) {
+            return
+        }
+        
+        try {
+            val service = bluetoothGattServer?.getService(SMART_HOME_SERVICE_UUID)
+            val characteristic = service?.getCharacteristic(TEMPERATURE_CHARACTERISTIC_UUID)
+            
+            if (characteristic != null) {
+                characteristic.value = _temperature.value.toString().toByteArray()
+                
+                synchronized(connectedDevices) {
+                    for (device in connectedDevices) {
+                        bluetoothGattServer?.notifyCharacteristicChanged(device, characteristic, false)
+                    }
+                }
+                
+                Log.d(TAG, "Notified temperature change: ${_temperature.value}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error notifying temperature change", e)
+        }
+    }
+    
+    // Notify connected devices about device list changes
+    fun notifyDeviceListChanged() {
+        if (!hasBluetoothPermissions() || bluetoothGattServer == null) {
+            return
+        }
+        
+        postToHandler {
+            try {
+                val service = bluetoothGattServer?.getService(SMART_HOME_SERVICE_UUID)
+                val characteristic = service?.getCharacteristic(DEVICE_LIST_CHARACTERISTIC_UUID)
+                
+                if (characteristic != null) {
+                    val deviceList = getDeviceList()
+                    val jsonData = gson.toJson(deviceList)
+                    characteristic.value = jsonData.toByteArray()
+                    
+                    synchronized(connectedDevices) {
+                        for (device in connectedDevices) {
+                            bluetoothGattServer?.notifyCharacteristicChanged(device, characteristic, false)
+                        }
+                    }
+                    
+                    Log.d(TAG, "Notified device list change: ${deviceList.size} devices")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error notifying device list change", e)
+            }
+        }
+    }
+    
+    // Get the list of smart home devices
+    private fun getDeviceList(): List<DeviceInfo> {
+        // This would typically come from your repository
+        // For now, we'll return a sample list
+        return listOf(
+            DeviceInfo("1", "Living Room Light", "LIGHT", "living_room", true, null),
+            DeviceInfo("2", "Kitchen Light", "LIGHT", "kitchen", false, null),
+            DeviceInfo("3", "Bedroom Light", "LIGHT", "bedroom", false, null),
+            DeviceInfo("4", "Thermostat", "THERMOSTAT", "living_room", true, "22.5"),
+            DeviceInfo("5", "Front Door", "LOCK", "entrance", false, null)
+        )
+    }
+    
+    // Process device control commands
+    private fun processDeviceCommand(command: String) {
+        try {
+            // Parse the command
+            // Format: "ACTION:deviceId:value"
+            // Example: "TOGGLE:1:" or "SET:4:23.5"
+            val parts = command.split(":")
+            if (parts.size < 2) {
+                Log.e(TAG, "Invalid command format: $command")
+                return
             }
             
-            // Then quit the handler thread
+            val action = parts[0]
+            val deviceId = parts[1]
+            val value = if (parts.size > 2) parts[2] else null
+            
+            Log.d(TAG, "Processing command: action=$action, deviceId=$deviceId, value=$value")
+            
+            // Handle the command
+            when (action) {
+                "TOGGLE" -> {
+                    // Toggle device state
+                    Log.d(TAG, "Toggling device $deviceId")
+                    // In a real app, you would update your repository
+                    // For now, we'll just notify that the device list changed
+                    notifyDeviceListChanged()
+                }
+                "SET" -> {
+                    // Set device value
+                    Log.d(TAG, "Setting device $deviceId to value $value")
+                    // In a real app, you would update your repository
+                    // For now, we'll just notify that the device list changed
+                    notifyDeviceListChanged()
+                }
+                else -> {
+                    Log.e(TAG, "Unknown action: $action")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing device command", e)
+        }
+    }
+    
+    // Update temperature
+    fun updateTemperature(temp: Float) {
+        _temperature.value = temp
+        notifyTemperatureChanged()
+    }
+    
+    // Clean up resources
+    fun cleanup() {
+        Log.d(TAG, "Cleaning up BluetoothGattServerService")
+        
+        coroutineScope.launch {
+            stopServer()
+            
             synchronized(threadLock) {
                 try {
-                    Log.d(TAG, "Quitting BLE handler thread")
                     isThreadActive = false
+                    bleHandler?.removeCallbacksAndMessages(null)
                     bleHandler = null
-                    bleHandlerThread.quitSafely()
+                    
+                    bleThread?.quitSafely()
+                    try {
+                        bleThread?.join(1000)
+                    } catch (e: InterruptedException) {
+                        Log.e(TAG, "Error joining BLE thread", e)
+                    }
+                    bleThread = null
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error quitting BLE handler thread", e)
+                    Log.e(TAG, "Error during cleanup", e)
                 }
             }
         }
     }
+    
+    // Data class for device information
+    data class DeviceInfo(
+        val id: String,
+        val name: String,
+        val type: String,
+        val roomId: String,
+        val isOn: Boolean,
+        val value: String?
+    )
 }

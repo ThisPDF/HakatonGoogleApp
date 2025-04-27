@@ -1,82 +1,76 @@
 package com.example.smarthome.wear.ui.sync
 
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.smarthome.wear.data.repository.DeviceRepository
+import com.example.smarthome.wear.data.wearable.WearableService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class SyncViewModel @Inject constructor(
-    private val deviceRepository: DeviceRepository
+    private val wearableService: WearableService
 ) : ViewModel() {
-    private val TAG = "SyncViewModel"
 
-    private val _uiState = MutableStateFlow(SyncUiState())
-    val uiState: StateFlow<SyncUiState> = _uiState.asStateFlow()
-
-    init {
-        // Auto-start sync when the screen is opened
-        startSync()
+    enum class SyncState {
+        CHECKING,
+        CONNECTING,
+        SYNCING,
+        COMPLETE,
+        ERROR
     }
-
-    fun startSync() {
-        _uiState.update { it.copy(isSyncing = true, error = null, syncComplete = false) }
-        
+    
+    private val _syncState = MutableStateFlow(SyncState.CHECKING)
+    val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
+    
+    private val _phoneConnected = MutableStateFlow(false)
+    val phoneConnected: StateFlow<Boolean> = _phoneConnected.asStateFlow()
+    
+    init {
+        checkConnection()
+    }
+    
+    private fun checkConnection() {
         viewModelScope.launch {
             try {
-                // First check Bluetooth status
-                val status = deviceRepository.checkBluetoothStatus()
+                _syncState.value = SyncState.CHECKING
                 
-                if (!status.isAvailable) {
-                    _uiState.update { it.copy(isSyncing = false, error = "Bluetooth is not available") }
-                    return@launch
+                // Wait for phone node to be found
+                delay(2000) // Give time for node discovery
+                val phoneNodeId = wearableService.phoneNodeId.first()
+                
+                if (phoneNodeId != null) {
+                    _phoneConnected.value = true
+                    _syncState.value = SyncState.CONNECTING
+                    
+                    // Wait for initial data
+                    delay(1000)
+                    _syncState.value = SyncState.SYNCING
+                    
+                    // Wait for device list
+                    val timeout = System.currentTimeMillis() + 5000 // 5 second timeout
+                    while (wearableService.devices.value.isEmpty() && System.currentTimeMillis() < timeout) {
+                        delay(500)
+                    }
+                    
+                    // Success if we have devices or timeout reached
+                    _syncState.value = SyncState.COMPLETE
+                } else {
+                    _phoneConnected.value = false
+                    _syncState.value = SyncState.ERROR
                 }
-                
-                if (!status.isEnabled) {
-                    _uiState.update { it.copy(isSyncing = false, error = "Bluetooth is not enabled") }
-                    return@launch
-                }
-                
-                // Connect to phone
-                val connected = deviceRepository.connectToPhone()
-                
-                if (!connected) {
-                    _uiState.update { it.copy(isSyncing = false, error = "Failed to connect to phone") }
-                    return@launch
-                }
-                
-                // Refresh devices
-                val refreshed = deviceRepository.refreshDevices()
-                
-                if (!refreshed) {
-                    _uiState.update { it.copy(isSyncing = false, error = "Failed to refresh devices") }
-                    return@launch
-                }
-                
-                // Short delay to ensure data is loaded
-                delay(1000)
-                
-                // Success
-                _uiState.update { it.copy(isSyncing = false, syncComplete = true) }
-                
             } catch (e: Exception) {
-                Log.e(TAG, "Error during sync: ${e.message}", e)
-                _uiState.update { it.copy(isSyncing = false, error = e.message ?: "Unknown error") }
+                _syncState.value = SyncState.ERROR
             }
         }
     }
-
-    data class SyncUiState(
-        val isSyncing: Boolean = false,
-        val error: String? = null,
-        val syncComplete: Boolean = false
-    )
+    
+    fun retry() {
+        checkConnection()
+    }
 }

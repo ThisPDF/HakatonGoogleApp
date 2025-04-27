@@ -3,6 +3,7 @@ package com.example.smarthome.wear.di
 import android.content.Context
 import com.example.smarthome.wear.data.bluetooth.BluetoothService
 import com.example.smarthome.wear.data.repository.DeviceRepository
+import com.example.smarthome.wear.data.wearable.WearableService
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -19,10 +20,18 @@ object AppModule {
     fun provideBluetoothService(@ApplicationContext context: Context): BluetoothService {
         return BluetoothService(context)
     }
+    
+    @Provides
+    @Singleton
+    fun provideWearableService(@ApplicationContext context: Context): WearableService {
+        return WearableService(context)
+    }
 
     @Provides
     @Singleton
-    fun provideDeviceRepository(bluetoothService: BluetoothService): DeviceRepository {
-        return DeviceRepository(bluetoothService)
+    fun provideDeviceRepository(
+        wearableService: WearableService
+    ): DeviceRepository {
+        return DeviceRepository(wearableService)
     }
 }

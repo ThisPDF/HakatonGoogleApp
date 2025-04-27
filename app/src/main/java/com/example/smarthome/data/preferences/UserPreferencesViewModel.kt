@@ -13,28 +13,28 @@ import javax.inject.Inject
 class UserPreferencesViewModel @Inject constructor(
     private val userPreferencesRepository: UserPreferencesRepository
 ) : ViewModel() {
-
+    
     val userPreferences: StateFlow<UserPreferences> = userPreferencesRepository.userPreferencesFlow
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = UserPreferences()
         )
-
+    
     fun toggleDarkTheme() {
         viewModelScope.launch {
             val currentValue = userPreferences.value.useDarkTheme ?: false
             userPreferencesRepository.updateDarkTheme(!currentValue)
         }
     }
-
+    
     fun toggleDynamicColor() {
         viewModelScope.launch {
             val currentValue = userPreferences.value.useDynamicColor ?: true
             userPreferencesRepository.updateDynamicColor(!currentValue)
         }
     }
-
+    
     fun toggleNotifications() {
         viewModelScope.launch {
             val currentValue = userPreferences.value.notificationsEnabled
